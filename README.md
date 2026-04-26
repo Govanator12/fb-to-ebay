@@ -6,6 +6,8 @@ The "intelligence" — extracting fields from the page, normalizing copy, pickin
 
 **Direction is one-way: Facebook Marketplace → eBay.**
 
+> **Looking for bidirectional support, or want to fix the FB image-expiry / login-wall problems?** See the experimental [`playwright-version`](https://github.com/Govanator12/fb-to-ebay/tree/playwright-version) branch — it adds Playwright browser automation to scrape FB more reliably and to post **eBay → Facebook**. Comes with selector brittleness and account-safety tradeoffs; check that branch's README before using.
+
 ## How it works
 
 ```

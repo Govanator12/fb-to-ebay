@@ -1,0 +1,16 @@
+# Secrets and tokens — never commit
+.env
+*.token.json
+token.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.uv-cache/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

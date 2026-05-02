@@ -1,8 +1,12 @@
-# Draft JSON schema
+# Draft JSON schemas
 
-The shape `ebay_publish.py --draft <path>` expects. Write this to a temp file (e.g. `/tmp/ebay-draft.json`) before invoking the publish script.
+Two shapes — one for each publish target. `ebay_publish.py` reads the eBay-side schema; `fb_post.py` reads the FB-side schema. The fetch scripts (`fb_fetch.py`, `ebay_fetch.py`) output a third intermediate shape (described at the bottom) that Claude transforms into one of these before publishing.
 
-## Minimal example
+## eBay-side schema (consumed by `ebay_publish.py`)
+
+Write this to a temp file (e.g. `/tmp/ebay-draft.json`) before invoking the publish script.
+
+### Minimal example
 
 ```json
 {
@@ -23,7 +27,7 @@ The shape `ebay_publish.py --draft <path>` expects. Write this to a temp file (e
 }
 ```
 
-## Field reference
+### Field reference
 
 | Field | Required | Notes |
 |---|---|---|
@@ -46,12 +50,56 @@ The shape `ebay_publish.py --draft <path>` expects. Write this to a temp file (e
 
 \* Required at offer-creation time, but `ebay_publish.py` will use the corresponding env var if the draft omits it. Set the env vars in `~/.config/fb-to-ebay/.env` to avoid pasting policy IDs into every draft.
 
-## Image URL caveat
+### Image URL caveat
 
 eBay fetches `imageUrls` server-side. **Facebook's CDN URLs are signed and expire**, so passing an `fbcdn.net` URL directly often fails (eBay sees a 403 or expired signature). Workarounds, in order of effort:
 
 1. The user re-uploads images to Imgur or another public host and pastes those URLs.
-2. The user host them on their own server / S3 bucket / GitHub Pages.
+2. The user hosts them on their own server / S3 bucket / GitHub Pages.
 3. Future: add an EPS (eBay Picture Services) upload helper to this skill that re-hosts images on eBay's CDN. Not implemented in v1.
 
 If the publish fails with an image-fetch error, surface the URL eBay couldn't reach and ask the user to re-host that image.
+
+## FB-side schema (consumed by `fb_post.py`)
+
+Write this to a temp file (e.g. `/tmp/fb-draft.json`) before invoking `fb_post.py --draft <path>`.
+
+```json
+{
+  "title": "Vintage Brown Leather Bomber Jacket Men's Medium",
+  "price": { "value": "85.00", "currency": "USD" },
+  "fbCategory": "Clothing & Accessories",
+  "fbCondition": "Used - Like New",
+  "description": "Vintage brown leather bomber jacket, men's medium. Excellent condition with light patina; lining intact, all zippers work. Smoke-free home. Local pickup in the Bay Area.",
+  "localImages": [
+    "~/.cache/fb-to-ebay/vintage-bomber-jacket/img-01.jpg",
+    "~/.cache/fb-to-ebay/vintage-bomber-jacket/img-02.jpg"
+  ]
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `title` | yes | ≤100 chars on FB |
+| `price.value` | yes | String number, no currency symbol |
+| `fbCategory` | yes | Exact text from FB's category dropdown — see fb_field_map.md |
+| `fbCondition` | yes | One of `New`, `Used - Like New`, `Used - Good`, `Used - Fair` |
+| `description` | yes | Plain text only — strip any HTML before passing |
+| `localImages` | recommended | Absolute file paths; FB's file picker accepts the whole list at once |
+| `location` | no | Override FB's default (account location) only when needed |
+
+## Intermediate shape (fetch script outputs)
+
+Both `fb_fetch.py` and `ebay_fetch.py` print a draft that Claude reshapes before publishing. The intermediate keys carry the raw extracted data:
+
+- `title`, `description`, `price`, `imageUrls`, `localImages`, `location`, `sourceUrl` — common to both
+- From `fb_fetch.py`: `fbCondition` (raw FB string)
+- From `ebay_fetch.py`: `ebayCondition`, `ebayConditionId`, `ebayCategoryPath`, `ebayCategoryId`
+
+Claude's job is to:
+1. Polish title/description for the destination's conventions
+2. Map condition to the destination's vocabulary
+3. Pick a destination category (using `ebay_taxonomy.py` for FB→eBay, or fb_field_map.md for eBay→FB)
+4. Add policy IDs (eBay-side only — usually picked up from env vars automatically)
+5. Decide what to do about images (re-host for eBay, attach locally for FB)
+6. Write out the destination-shaped draft

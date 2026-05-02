@@ -75,17 +75,24 @@ def extract_listing(page) -> dict:
     Selectors are best-effort; FB rewrites their DOM frequently. We lean on
     og:* meta tags where they exist and fall back to visible-text heuristics.
     """
-    # Wait for the page to be substantively loaded — h1 is the most reliable signal.
-    page.wait_for_selector("h1, meta[property='og:title']", timeout=30_000)
+    # Wait for the page to be substantively loaded. h1 is the user-visible signal;
+    # the meta-tag check uses state="attached" since meta tags live in <head>
+    # and are never "visible" by Playwright's default check.
+    page.wait_for_selector("h1, meta[property='og:title']", state="attached", timeout=30_000)
 
     title = safe_attr(page, "meta[property='og:title']") or ""
     if not title:
-        h1 = page.locator("h1").first
-        if h1.count():
+        # FB renders multiple h1s (e.g. "Chats" in the Messenger sidebar). Scope
+        # to the main content region so we get the listing's title, not chrome.
+        # Falls back to the longest h1 on the page if [role=main] isn't there.
+        candidates = page.locator("[role='main'] h1, [role='article'] h1").all() or page.locator("h1").all()
+        for h1 in candidates:
             try:
-                title = h1.inner_text(timeout=2_000)
+                txt = h1.inner_text(timeout=2_000).strip()
+                if txt and len(txt) > len(title):
+                    title = txt
             except Exception:
-                title = ""
+                continue
 
     og_desc = safe_attr(page, "meta[property='og:description']") or ""
 

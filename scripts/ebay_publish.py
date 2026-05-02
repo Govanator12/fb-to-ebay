@@ -122,12 +122,18 @@ def create_inventory_item(env: dict, token: str, sku: str, draft: dict) -> None:
 
 
 def build_package_weight_and_size(draft: dict) -> dict | None:
-    """Convert draft.weightLbs + draft.boxDimensionsIn into eBay's packageWeightAndSize."""
+    """Convert draft.weightLbs + draft.boxDimensionsIn into eBay's packageWeightAndSize.
+
+    We deliberately omit packageType — eBay's USPS calculated rates throw
+    'Invalid <ShippingPackage>' when a packageType is specified that isn't
+    USPS-native (e.g. MAILING_BOX with USPSPriority). Letting eBay infer
+    from weight + dimensions is more reliable.
+    """
     weight = draft.get("weightLbs")
     dims = draft.get("boxDimensionsIn")
     if weight is None and not dims:
         return None
-    out: dict = {"packageType": "MAILING_BOX"}
+    out: dict = {}
     if weight is not None:
         out["weight"] = {"value": float(weight), "unit": "POUND"}
     if dims and len(dims) == 3:
@@ -137,7 +143,7 @@ def build_package_weight_and_size(draft: dict) -> dict | None:
             "height": float(dims[2]),
             "unit": "INCH",
         }
-    return out
+    return out or None
 
 
 def with_env_default(draft: dict, draft_key: str, env: dict, env_key: str, where: str) -> object:
@@ -235,22 +241,25 @@ def list_fulfillment_policies(env: dict, token: str, marketplace_id: str) -> lis
 
 
 def fulfillment_policies_match(existing: dict, wanted: dict) -> bool:
-    """Loose match — same handling/pickup/intl + same primary domestic service."""
+    """Match on the handful of fields that actually change buyer-visible behavior."""
     if existing.get("handlingTime", {}).get("value") != wanted["handlingTime"]["value"]:
         return False
     if bool(existing.get("pickupDropOff")) != bool(wanted["pickupDropOff"]):
         return False
     if bool(existing.get("globalShipping")) != bool(wanted["globalShipping"]):
         return False
-    # Compare just the first domestic shipping service code.
-    def primary_code(p: dict) -> str | None:
+
+    def primary_service(p: dict) -> dict:
         for opt in p.get("shippingOptions", []):
             if opt.get("optionType") == "DOMESTIC":
-                services = opt.get("shippingServices", [])
-                if services:
-                    return services[0].get("shippingServiceCode")
-        return None
-    return primary_code(existing) == primary_code(wanted)
+                return {
+                    "costType": opt.get("costType"),
+                    "service": (opt.get("shippingServices") or [{}])[0].get("shippingServiceCode"),
+                    "free": bool((opt.get("shippingServices") or [{}])[0].get("freeShipping")),
+                }
+        return {}
+
+    return primary_service(existing) == primary_service(wanted)
 
 
 def find_or_create_fulfillment_policy(env: dict, token: str, body: dict) -> str:

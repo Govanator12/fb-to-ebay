@@ -38,11 +38,13 @@ The shape `ebay_publish.py --draft <path>` expects. Write this to a temp file (e
 | `imageUrls` | yes | Array of publicly-accessible HTTPS URLs |
 | `aspects` | no | `{ "Brand": ["..."], "Size": ["..."] }` — required by some categories |
 | `marketplaceId` | no | Defaults to `EBAY_MARKETPLACE_ID` env var (or `EBAY_US`) |
-| `merchantLocationKey` | yes | Inventory location key, usually `"default"` |
-| `fulfillmentPolicyId` | yes | From eBay business policies |
-| `paymentPolicyId` | yes | From eBay business policies |
-| `returnPolicyId` | yes | From eBay business policies |
+| `merchantLocationKey` | yes* | Inventory location key, usually `"default"`. Falls back to `EBAY_MERCHANT_LOCATION_KEY` env var. |
+| `fulfillmentPolicyId` | yes* | From eBay business policies. Falls back to `EBAY_FULFILLMENT_POLICY_ID` env var. |
+| `paymentPolicyId` | yes* | From eBay business policies. Falls back to `EBAY_PAYMENT_POLICY_ID` env var. |
+| `returnPolicyId` | yes* | From eBay business policies. Falls back to `EBAY_RETURN_POLICY_ID` env var. |
 | `sku` | no | Auto-generated from title + timestamp if omitted |
+
+\* Required at offer-creation time, but `ebay_publish.py` will use the corresponding env var if the draft omits it. Set the env vars in `~/.config/fb-to-ebay/.env` to avoid pasting policy IDs into every draft.
 
 ## Image URL caveat
 

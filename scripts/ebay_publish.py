@@ -113,6 +113,15 @@ def create_inventory_item(env: dict, token: str, sku: str, draft: dict) -> None:
     print(f"✓ Inventory item created (sku={sku})")
 
 
+def with_env_default(draft: dict, draft_key: str, env: dict, env_key: str, where: str) -> object:
+    """Pull a value from the draft, falling back to an env var, then erroring."""
+    if draft_key in draft:
+        return draft[draft_key]
+    if env_key in env:
+        return env[env_key]
+    sys.exit(f"Draft is missing {where}.{draft_key} and env has no {env_key}")
+
+
 def create_offer(env: dict, token: str, sku: str, draft: dict) -> str:
     price = required(draft, "price", "draft")
     body = {
@@ -125,11 +134,19 @@ def create_offer(env: dict, token: str, sku: str, draft: dict) -> str:
         "pricingSummary": {
             "price": {"value": str(price["value"]), "currency": price.get("currency", "USD")}
         },
-        "merchantLocationKey": required(draft, "merchantLocationKey", "draft"),
+        "merchantLocationKey": with_env_default(
+            draft, "merchantLocationKey", env, "EBAY_MERCHANT_LOCATION_KEY", "draft"
+        ),
         "listingPolicies": {
-            "fulfillmentPolicyId": required(draft, "fulfillmentPolicyId", "draft"),
-            "paymentPolicyId": required(draft, "paymentPolicyId", "draft"),
-            "returnPolicyId": required(draft, "returnPolicyId", "draft"),
+            "fulfillmentPolicyId": with_env_default(
+                draft, "fulfillmentPolicyId", env, "EBAY_FULFILLMENT_POLICY_ID", "draft"
+            ),
+            "paymentPolicyId": with_env_default(
+                draft, "paymentPolicyId", env, "EBAY_PAYMENT_POLICY_ID", "draft"
+            ),
+            "returnPolicyId": with_env_default(
+                draft, "returnPolicyId", env, "EBAY_RETURN_POLICY_ID", "draft"
+            ),
         },
     }
     url = f"https://{api_host(env)}/sell/inventory/v1/offer"

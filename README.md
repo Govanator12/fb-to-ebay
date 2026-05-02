@@ -1,6 +1,4 @@
-# fb-to-ebay (playwright-version)
-
-> ⚠️ **Experimental branch.** This branch adds Playwright browser automation to fix the FB-side limitations of `main` (login walls, expiring image URLs) and to support the **opposite direction (eBay → Facebook Marketplace)**. For the simpler API-only version, switch to [`main`](https://github.com/Govanator12/fb-to-ebay).
+# fb-to-ebay
 
 A [Claude Code](https://claude.com/claude-code) skill that mirrors a listing between Facebook Marketplace and eBay in either direction. You paste a Marketplace or eBay URL into Claude; it fetches the listing, polishes the fields for the destination platform's conventions, and (after you approve) publishes — eBay via the Sell APIs, Facebook via Playwright pre-filling the create-listing form for you to review and submit.
 
@@ -48,7 +46,7 @@ The "intelligence" — extracting fields, normalizing copy, mapping conditions, 
 ## Install
 
 ```bash
-git clone -b playwright-version https://github.com/Govanator12/fb-to-ebay.git ~/.claude/skills/fb-to-ebay
+git clone https://github.com/Govanator12/fb-to-ebay.git ~/.claude/skills/fb-to-ebay
 ```
 
 Claude Code auto-discovers skills in `~/.claude/skills/`. The skill triggers when you paste a `facebook.com/marketplace` URL, an `ebay.com/itm` URL, or ask Claude to "crosspost" or "mirror" a listing in either direction.
@@ -71,6 +69,7 @@ Restart your shell so `~/.local/bin` is on PATH. (Avoid the `astral-uv` snap —
 
 1. Sign up at <https://developer.ebay.com/signin> (free) and complete the developer-program approval (usually instant; sometimes a short queue).
 2. Create an application keyset under "My Account → Application Keysets". You get separate **App ID**, **Cert ID**, **Dev ID** sets for **Sandbox** and **Production**. Use the Sandbox set first.
+   - **Production keyset blocked by "Marketplace Account Deletion" requirement?** New developer accounts can't create production keysets until they comply with eBay's marketplace deletion notification process. If you're not storing other users' eBay data (which is the case for this skill — you only manage your own listings), apply for the exemption: go to <https://developer.ebay.com/marketplace-account-deletion>, toggle **"Not persisting eBay data"** ON, pick the matching exemption reason, write a one-sentence justification (e.g. "manages only my own seller listings; no buyer/third-party data persisted"), submit. The exemption is usually auto-granted instantly. Sandbox keysets are not blocked by this.
 3. Set up a **RuName** under "User Tokens → Get a Token from eBay via Your Application". When prompted, choose **OAuth** (not Auth'n'Auth — that's the old Trading-API flow we don't use). Provide three HTTPS URLs:
    - **Auth accepted URL**, **Auth declined URL**, **Privacy policy URL**
    - eBay only stores the strings; it doesn't fetch them. After consent your browser will land at `<accepted-url>?code=...` and you'll copy the URL from the address bar.

@@ -199,6 +199,23 @@ def main() -> None:
         return
 
     token = get_access_token(env)
+
+    # If the draft has localImages but no usable imageUrls, upload them to EPS
+    # so eBay can fetch them. (FB CDN URLs would 403 from eBay's side.)
+    local_images = draft.get("localImages") or []
+    image_urls = draft.get("imageUrls") or []
+    needs_upload = local_images and not any(
+        u.startswith("http") and "ebayimg.com" in u for u in image_urls
+    )
+    if needs_upload:
+        from ebay_eps import upload_images
+        paths = [Path(p).expanduser() for p in local_images]
+        print(f"Uploading {len(paths)} image(s) to eBay Picture Services...")
+        eps_urls = upload_images(env, token, paths)
+        for url in eps_urls:
+            print(f"  ✓ {url}")
+        draft["imageUrls"] = eps_urls
+
     create_inventory_item(env, token, sku, draft)
     offer_id = create_offer(env, token, sku, draft)
     listing_id = publish_offer(env, token, offer_id)

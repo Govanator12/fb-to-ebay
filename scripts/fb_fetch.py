@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html as html_lib
 import json
 import re
 import sys
@@ -52,21 +53,41 @@ def parse_price(text: str) -> dict | None:
     return {"value": value, "currency": currency}
 
 
+def safe_attr(page, selector: str, attr: str = "content") -> str | None:
+    """Return an attribute value if the selector matches, else None.
+
+    Calling get_attribute() on a non-existent locator blocks for 30s before
+    timing out, so we count first and skip the call entirely if there's no
+    match. FB's DOM omits og:* meta tags in some logged-in views.
+    """
+    loc = page.locator(selector)
+    if loc.count() == 0:
+        return None
+    try:
+        return loc.first.get_attribute(attr, timeout=2_000)
+    except Exception:
+        return None
+
+
 def extract_listing(page) -> dict:
     """Extract fields from a loaded Marketplace listing page.
 
     Selectors are best-effort; FB rewrites their DOM frequently. We lean on
-    og:* meta tags where possible and use visible-text heuristics elsewhere.
+    og:* meta tags where they exist and fall back to visible-text heuristics.
     """
-    # Wait for either the title heading or an og:title meta — whichever appears.
+    # Wait for the page to be substantively loaded — h1 is the most reliable signal.
     page.wait_for_selector("h1, meta[property='og:title']", timeout=30_000)
 
-    title = page.locator("meta[property='og:title']").get_attribute("content")
+    title = safe_attr(page, "meta[property='og:title']") or ""
     if not title:
         h1 = page.locator("h1").first
-        title = h1.inner_text() if h1.count() else ""
+        if h1.count():
+            try:
+                title = h1.inner_text(timeout=2_000)
+            except Exception:
+                title = ""
 
-    og_desc = page.locator("meta[property='og:description']").get_attribute("content") or ""
+    og_desc = safe_attr(page, "meta[property='og:description']") or ""
 
     # Try to expand "See more" so the full description is in the DOM.
     try:
@@ -78,16 +99,19 @@ def extract_listing(page) -> dict:
 
     # Description: prefer the first long-ish text block on the page that isn't the title.
     description = og_desc
-    for block in page.locator("div[dir='auto']").all()[:20]:
-        try:
-            txt = block.inner_text().strip()
-        except Exception:
-            continue
-        if len(txt) > len(description) and txt != title:
-            description = txt
-            break
+    try:
+        for block in page.locator("div[dir='auto']").all()[:20]:
+            try:
+                txt = block.inner_text(timeout=2_000).strip()
+            except Exception:
+                continue
+            if len(txt) > len(description) and txt != title:
+                description = txt
+                break
+    except Exception:
+        pass
 
-    body_text = page.inner_text("body")
+    body_text = page.inner_text("body", timeout=5_000)
     price = parse_price(body_text)
 
     condition_match = re.search(
@@ -99,21 +123,25 @@ def extract_listing(page) -> dict:
     location_match = re.search(r"(?:Location[:\s]+|Listed in\s+)([A-Za-z][\w ,.\-]{2,60})", body_text)
     location = location_match.group(1).strip() if location_match else None
 
-    # Image URLs: collect from og:image plus any large carousel <img>s.
-    image_urls: list[str] = []
-    og_img = page.locator("meta[property='og:image']").get_attribute("content")
-    if og_img:
-        image_urls.append(og_img)
-    for img in page.locator("img").all():
+    image_urls = collect_listing_photos(page, og_img=safe_attr(page, "meta[property='og:image']"))
+
+    # Description fallback: scan the page HTML for the JSON-embedded description.
+    # FB's React app usually hydrates listing data in a script tag like
+    # {"redacted_description":{"text":"..."}} or {"description":{"text":"..."}}.
+    if not description:
         try:
-            src = img.get_attribute("src") or ""
-            if src.startswith("http") and "scontent" in src and src not in image_urls:
-                # Skip tiny avatars/icons by checking rendered size
-                box = img.bounding_box()
-                if box and box["width"] >= 200:
-                    image_urls.append(src)
+            html = page.content()
+            for pattern in (
+                r'"redacted_description"\s*:\s*{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"',
+                r'"marketplace_listing_description"\s*:\s*{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"',
+                r'"description"\s*:\s*{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"',
+            ):
+                m = re.search(pattern, html)
+                if m:
+                    description = bytes(m.group(1), "utf-8").decode("unicode_escape")
+                    break
         except Exception:
-            continue
+            pass
 
     return {
         "title": title,
@@ -123,6 +151,54 @@ def extract_listing(page) -> dict:
         "location": location,
         "imageUrls": image_urls,
     }
+
+
+LISTING_PHOTO_PATH_RE = re.compile(r'https://[^"\s\\]+/t45\.5328-4/([0-9]+_[0-9]+_[0-9]+_n)\.jpg[^"\s\\]*')
+
+
+def collect_listing_photos(page, og_img: str | None) -> list[str]:
+    """Pull just the listing's own photos, not related-items sidebar thumbs.
+
+    The listing's photos all share the `t45.5328-4` CDN path (FB's marketplace
+    listing-photo bucket); related-items sidebar thumbs use `t39.84726-6` with
+    a `?stp=c<crop>...` parameter. The reliable way to find every listing
+    photo is to grep the rendered HTML — every photo is referenced there even
+    if its <img> tag isn't yet rendered (FB lazy-loads the carousel beyond
+    the cover). DOM walking misses these; HTML scanning catches them all.
+
+    We dedupe by the file-ID portion of the URL (multiple URL variants of the
+    same photo at different sizes/crops appear in the HTML) and prefer the
+    largest available variant.
+    """
+    html = page.content()
+    by_id: dict[str, str] = {}
+    for match in LISTING_PHOTO_PATH_RE.finditer(html):
+        url = html_lib.unescape(match.group(0))  # &amp; -> &
+        file_id = match.group(1)
+        # Skip cropped thumbnails — even on the listing-photo CDN path, FB sometimes
+        # uses `c<x>.<y>.<w>.<h>a_` crop parameters for related-item previews.
+        if re.search(r"stp=c\d+\.\d+\.\d+\.\d+", url):
+            continue
+        existing = by_id.get(file_id, "")
+        if not existing or _photo_size_score(url) > _photo_size_score(existing):
+            by_id[file_id] = url
+
+    photos = list(by_id.values())
+    if not photos and og_img:
+        photos.append(og_img)
+    return photos
+
+
+def _photo_size_score(url: str) -> int:
+    """Rank a photo URL by its embedded size hint (larger = better)."""
+    m = re.search(r"_[ps](\d+)x(\d+)", url)
+    if m:
+        return int(m.group(1)) * int(m.group(2))
+    if "stp=dst-jpg" in url and "_s" in url:
+        m = re.search(r"_s(\d+)x(\d+)", url)
+        if m:
+            return int(m.group(1)) * int(m.group(2))
+    return 1000  # unknown but uncropped → assume reasonable
 
 
 def download_images(urls: list[str], out_dir: Path) -> list[str]:

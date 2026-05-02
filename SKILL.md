@@ -58,11 +58,27 @@ Show all 3 suggestions with full category paths. Don't auto-select — categorie
 
 eBay needs publicly-reachable HTTPS image URLs. The FB URLs in `imageUrls` are signed and short-lived; eBay typically can't fetch them server-side. Ask the user to either re-host the downloaded images (paths in `localImages`) on Imgur/S3/their own server and paste the new URLs, or skip images for the first try and add them later via the eBay UI. Don't pretend the FB URLs will work — they usually don't.
 
-### 5. Show the draft
+### 5. Confirm shipping/listing details
 
-Display title, price, condition, category, description preview, image source. Wait for explicit approval.
+Before showing the final draft, confirm these five per-listing answers. Each has a sensible env-var fallback in `.env` so they don't have to be asked every time:
 
-### 6. Publish
+| Question | Env var (skip the question if set) | Default if unset |
+|---|---|---|
+| Estimated weight + box dimensions? | — (always per-listing) | Ask |
+| Allow local pickup? | `EBAY_OFFER_LOCAL_PICKUP` | `true` (FB items often suit local pickup) |
+| Ship internationally? | `EBAY_SHIP_INTERNATIONALLY` | `false` |
+| Handling time (business days between sale and drop-off)? | `EBAY_DEFAULT_HANDLING_DAYS` | `2` |
+| Returns accepted? | uses existing return policy | Don't re-ask unless user wants override |
+
+Skip whatever's already in env. Only ask the user about fields that have no env value AND no per-listing override in the draft. Read your env setting back at the user the first time it's used so they know it's wired up ("I'll use 2-day handling from your env — say so if this listing needs different.").
+
+For weight + dimensions specifically, ask plainly ("about how much does it weigh and what size box?"). These feed the carrier's calculated rate.
+
+### 6. Show the draft
+
+Display title, price, condition, category, description preview, image source, plus the shipping summary built from step 5's answers. Wait for explicit approval.
+
+### 7. Publish
 
 Write the approved draft to a temp JSON file matching `references/draft_schema.md` (eBay-side schema), then:
 

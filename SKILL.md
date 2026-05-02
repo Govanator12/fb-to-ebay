@@ -63,7 +63,9 @@ The script prints the live listing URL on success. Show it to the user.
 
 ## Errors
 
-- **Missing eBay business policies** (`Error 25709` or similar payment/return/fulfillment policy errors): the user's eBay account hasn't set up policies yet. Send them to https://www.bizpolicy.ebay.com to create them, then retry. Don't try to create policies via API — the UI is faster and the user only needs to do it once.
+- **Missing eBay business policies** (`Error 25709` or similar payment/return/fulfillment policy errors): account hasn't set up policies yet. Production users can use https://www.ebay.com/sh/policies in the seller hub UI; sandbox users have to use the Account API directly (the seller hub for policies isn't reliable on sandbox). Either way, the README's "Setup → step 6" section walks through opting in and creating the three policies, plus registering an inventory location. After setup, write the resulting IDs into the user's `.env` (`EBAY_FULFILLMENT_POLICY_ID`, `EBAY_PAYMENT_POLICY_ID`, `EBAY_RETURN_POLICY_ID`) so they don't need to live in every draft.
+- **Missing inventory location** (`Error 25007` or "merchant location key not found"): same root cause — first-time setup. Create one with `POST /sell/inventory/v1/location/{key}` (see README step 6e) and put `EBAY_MERCHANT_LOCATION_KEY=<key>` in `.env`.
+- **Category requires aspects** (`Error 25002`, "item specific X is missing"): the chosen `categoryId` requires structured item-specifics. Call `GET /commerce/taxonomy/v1/category_tree/{tree}/get_item_aspects_for_category?category_id=<id>` to see what's needed, ask the user for the values, add them under `aspects: { ... }` in the draft, retry.
 - **Image upload fails**: usually because the FB image URL has expired (they're signed and short-lived). Ask the user to refresh the source URL or paste new image links.
 - **Token expired**: the publish script auto-refreshes. If refresh itself fails, prompt the user to re-run `ebay_auth.py login`.
 - **Sandbox confusion**: if the user sees a sandbox URL when they expected production (or vice versa), check `EBAY_ENV` in their `.env`. Don't change this for them without confirmation.

@@ -91,26 +91,87 @@ Fill in `EBAY_APP_ID`, `EBAY_CERT_ID`, `EBAY_DEV_ID`, `EBAY_RUNAME`. Leave `EBAY
 uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py login
 ```
 
-The script prints a URL. Open it in a browser, log in with your `TESTUSER_<name>` credentials, grant consent. You'll be redirected to your auth-accepted URL — your browser will probably show a 404 (since example.com doesn't host that page), but the URL in the address bar is what matters. Copy the **entire** URL (with the `?code=...` query string) and paste it back into the script.
+The script prints a URL. Open it in a browser, log in with your `TESTUSER_<name>` credentials, grant consent. You'll be redirected to your auth-accepted URL — your browser will probably show a 404 (since `example.com` doesn't host that page), but the URL in the address bar is what matters. Copy the **entire** URL (with the `?code=...` query string) and paste it back into the script.
 
-The token is cached at `~/.config/fb-to-ebay/token.json` (mode `0600`). The access token lasts 2 hours and auto-refreshes; the refresh token is good for ~18 months. Scopes granted: `api_scope`, `sell.inventory`, `sell.account.readonly`, `commerce.catalog.readonly`. If you change `SCOPES` in `ebay_auth.py`, re-run `login` to mint a new token — refresh won't add scopes.
+**If your shell can't pipe stdin to interactive prompts** (e.g. Claude Code's bash input mode), use the two-step form: run `login` to get the URL, then complete the exchange with the URL as a flag:
 
-### 6. Opt into Business Policies and create them
+```bash
+uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py login --redirect-url "https://example.com/accepted?code=..."
+```
 
-eBay requires a payment, return, and fulfillment policy on your account before any listing can be published. Sandbox needs an explicit opt-in:
+The double quotes are required — the URL contains `&` and `=` that the shell would otherwise interpret.
 
-- **Sandbox opt-in**: <https://www.bizpolicy.sandbox.ebay.com/businesspolicy/policyoptin>
-- **Production opt-in**: <https://www.bizpolicy.ebay.com/businesspolicy/policyoptin>
+The token is cached at `~/.config/fb-to-ebay/token.json` (mode `0600`). The access token lasts 2 hours and auto-refreshes; the refresh token is good for ~18 months. Scopes granted: `api_scope`, `sell.inventory`, `sell.account`, `commerce.catalog.readonly`. If you change `SCOPES` in `ebay_auth.py`, re-run `login` to mint a new token — refresh won't add scopes.
 
-Sign in with the right account (sandbox `TESTUSER_` or your real account), opt in, then create the three policies via the seller-hub UI. Capture the resulting policy IDs — you'll include them in each draft. (You can also create policies via the Account API if you prefer scripts.)
+### 6. Opt into Business Policies, create policies, register a location
+
+eBay requires three policies (payment, return, fulfillment) **and** at least one inventory location before any listing can be published. Sandbox needs API setup; production users can do most of this through the seller hub UI but the API works there too.
+
+For **sandbox**, the seller-hub UI for policies isn't reliable, so use the Account API directly. Run all of this in one shell session — `$TOKEN` reuses your saved access token:
+
+```bash
+HOST=api.sandbox.ebay.com   # or api.ebay.com for production
+TOKEN=$(uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py token)
+
+# 6a. Opt in to business-policy management (sandbox only — production is opted in by default)
+curl -X POST https://$HOST/sell/account/v1/program/opt_in \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"programType":"SELLING_POLICY_MANAGEMENT"}'
+
+# 6b. Fulfillment policy: USPS Priority, free domestic shipping, 1-day handling
+curl -X POST https://$HOST/sell/account/v1/fulfillment_policy \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Content-Language: en-US" \
+  -d '{
+    "name":"Default US Fulfillment","marketplaceId":"EBAY_US",
+    "categoryTypes":[{"name":"ALL_EXCLUDING_MOTORS_VEHICLES"}],
+    "handlingTime":{"value":1,"unit":"DAY"},
+    "shippingOptions":[{"optionType":"DOMESTIC","costType":"FLAT_RATE",
+      "shippingServices":[{"sortOrder":1,"shippingCarrierCode":"USPS","shippingServiceCode":"USPSPriority","freeShipping":true}]}]}'
+
+# 6c. Payment policy: immediate payment via eBay Managed Payments
+curl -X POST https://$HOST/sell/account/v1/payment_policy \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Content-Language: en-US" \
+  -d '{
+    "name":"Default Payment Policy","marketplaceId":"EBAY_US",
+    "categoryTypes":[{"name":"ALL_EXCLUDING_MOTORS_VEHICLES"}],"immediatePay":true}'
+
+# 6d. Return policy: 30-day money-back, buyer pays return shipping
+curl -X POST https://$HOST/sell/account/v1/return_policy \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Content-Language: en-US" \
+  -d '{
+    "name":"Default Return Policy","marketplaceId":"EBAY_US",
+    "returnsAccepted":true,"returnPeriod":{"value":30,"unit":"DAY"},
+    "refundMethod":"MONEY_BACK","returnShippingCostPayer":"BUYER"}'
+
+# 6e. Register an inventory location (replace the address with yours)
+curl -X POST https://$HOST/sell/inventory/v1/location/default \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Content-Language: en-US" \
+  -d '{
+    "location":{"address":{"country":"US","postalCode":"98101","stateOrProvince":"WA","city":"Seattle"}},
+    "name":"Default location","merchantLocationStatus":"ENABLED","locationTypes":["WAREHOUSE"]}'
+```
+
+Each policy call returns a JSON body with the policy ID (`fulfillmentPolicyId`, `paymentPolicyId`, `returnPolicyId`). Append them to your `.env` so `ebay_publish.py` doesn't make you paste them into every draft:
+
+```
+EBAY_FULFILLMENT_POLICY_ID=<id from 6b>
+EBAY_PAYMENT_POLICY_ID=<id from 6c>
+EBAY_RETURN_POLICY_ID=<id from 6d>
+EBAY_MERCHANT_LOCATION_KEY=default
+```
 
 ### 7. Verify
 
 ```bash
+# Auth + Taxonomy API
 uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_taxonomy.py "Vintage leather jacket"
+
+# Confirm policy opt-in landed
+curl -sH "Authorization: Bearer $(uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py token)" \
+  https://api.sandbox.ebay.com/sell/account/v1/program/get_opted_in_programs
 ```
 
-Should print three category suggestions as JSON. If you get a 403, your token is missing a scope — re-run `ebay_auth.py login`.
+The taxonomy call should print three category suggestions as JSON. The opt-in check should show `SELLING_POLICY_MANAGEMENT` in the programs list. If either returns a 403, your token is missing a scope — re-run `ebay_auth.py login`.
 
 ## Usage
 

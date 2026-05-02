@@ -122,6 +122,74 @@ def with_env_default(draft: dict, draft_key: str, env: dict, env_key: str, where
     sys.exit(f"Draft is missing {where}.{draft_key} and env has no {env_key}")
 
 
+def _env_bool(env: dict, key: str, default: bool) -> bool:
+    val = env.get(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+SHIPPING_OVERRIDE_KEYS = ("handlingDays", "localPickup", "shipInternationally", "weightLbs", "boxDimensionsIn")
+
+
+def has_shipping_overrides(draft: dict, env: dict) -> bool:
+    """Should we mint a per-listing fulfillment policy instead of using the env default?"""
+    if any(k in draft for k in SHIPPING_OVERRIDE_KEYS):
+        return True
+    return any(env.get(k) for k in ("EBAY_DEFAULT_HANDLING_DAYS", "EBAY_OFFER_LOCAL_PICKUP", "EBAY_SHIP_INTERNATIONALLY"))
+
+
+def build_dynamic_fulfillment_policy(env: dict, draft: dict, sku: str) -> dict:
+    """Build a fulfillment policy body from the listing's shipping settings."""
+    handling_days = int(draft.get("handlingDays") or env.get("EBAY_DEFAULT_HANDLING_DAYS") or 2)
+    local_pickup = bool(draft["localPickup"]) if "localPickup" in draft else _env_bool(env, "EBAY_OFFER_LOCAL_PICKUP", True)
+    ship_intl = bool(draft["shipInternationally"]) if "shipInternationally" in draft else _env_bool(env, "EBAY_SHIP_INTERNATIONALLY", False)
+
+    shipping_options = [{
+        "optionType": "DOMESTIC",
+        "costType": "FLAT_RATE",
+        "shippingServices": [{
+            "sortOrder": 1,
+            "shippingCarrierCode": "USPS",
+            "shippingServiceCode": "USPSPriority",
+            "shippingCost": {"value": "0.0", "currency": "USD"},
+            "freeShipping": True,
+            "buyerResponsibleForShipping": False,
+            "buyerResponsibleForPickup": False,
+        }],
+    }]
+    if ship_intl:
+        shipping_options.append({
+            "optionType": "INTERNATIONAL",
+            "costType": "FLAT_RATE",
+            "shippingServices": [{
+                "sortOrder": 1,
+                "shippingCarrierCode": "USPS",
+                "shippingServiceCode": "USPSPriorityMailInternational",
+                "shippingCost": {"value": "30.0", "currency": "USD"},
+                "buyerResponsibleForShipping": True,
+            }],
+        })
+
+    return {
+        "name": f"fb2ebay-{sku[:40]}-{int(time.time())}"[:64],
+        "marketplaceId": draft.get("marketplaceId", env.get("EBAY_MARKETPLACE_ID", "EBAY_US")),
+        "categoryTypes": [{"name": "ALL_EXCLUDING_MOTORS_VEHICLES"}],
+        "handlingTime": {"value": handling_days, "unit": "DAY"},
+        "shippingOptions": shipping_options,
+        "pickupDropOff": local_pickup,
+        "globalShipping": False,
+    }
+
+
+def create_fulfillment_policy(env: dict, token: str, body: dict) -> str:
+    url = f"https://{api_host(env)}/sell/account/v1/fulfillment_policy"
+    resp = post_json(url, token, body)
+    if resp.status_code not in (200, 201):
+        explain_failure(resp, "createFulfillmentPolicy")
+    return resp.json()["fulfillmentPolicyId"]
+
+
 def create_offer(env: dict, token: str, sku: str, draft: dict) -> str:
     price = required(draft, "price", "draft")
     body = {
@@ -199,6 +267,18 @@ def main() -> None:
         return
 
     token = get_access_token(env)
+
+    # Mint a per-listing fulfillment policy if the draft has shipping overrides
+    # (handlingDays, localPickup, etc.) or any of the corresponding env defaults
+    # are set. Otherwise fall back to EBAY_FULFILLMENT_POLICY_ID.
+    if has_shipping_overrides(draft, env) and "fulfillmentPolicyId" not in draft:
+        body = build_dynamic_fulfillment_policy(env, draft, sku)
+        print(f"Creating per-listing fulfillment policy "
+              f"(handling={body['handlingTime']['value']}d, "
+              f"pickupDropOff={body['pickupDropOff']}, "
+              f"international={len(body['shippingOptions']) > 1})...")
+        draft["fulfillmentPolicyId"] = create_fulfillment_policy(env, token, body)
+        print(f"  ✓ fulfillmentPolicyId={draft['fulfillmentPolicyId']}")
 
     # If the draft has localImages but no usable imageUrls, upload them to EPS
     # so eBay can fetch them. (FB CDN URLs would 403 from eBay's side.)

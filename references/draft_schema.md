@@ -47,6 +47,13 @@ Write this to a temp file (e.g. `/tmp/ebay-draft.json`) before invoking the publ
 | `paymentPolicyId` | yes* | From eBay business policies. Falls back to `EBAY_PAYMENT_POLICY_ID` env var. |
 | `returnPolicyId` | yes* | From eBay business policies. Falls back to `EBAY_RETURN_POLICY_ID` env var. |
 | `sku` | no | Auto-generated from title + timestamp if omitted |
+| `handlingDays` | no | Per-listing handling time override (business days). Falls back to `EBAY_DEFAULT_HANDLING_DAYS`, then 2. |
+| `localPickup` | no | Per-listing local-pickup override (true/false). Falls back to `EBAY_OFFER_LOCAL_PICKUP`, then true. |
+| `shipInternationally` | no | Per-listing international-shipping override. Falls back to `EBAY_SHIP_INTERNATIONALLY`, then false. |
+| `weightLbs` | no | Item weight; reserved for future calculated-rate support, no effect today. |
+| `boxDimensionsIn` | no | Box dimensions `[L, W, H]` in inches; reserved for calculated rates, no effect today. |
+
+If any of `handlingDays`, `localPickup`, `shipInternationally` (or their env equivalents) are set, `ebay_publish.py` mints a fresh per-listing fulfillment policy on the fly via `createFulfillmentPolicy` and uses its ID instead of `EBAY_FULFILLMENT_POLICY_ID`. Otherwise the env-default policy is used as-is.
 
 \* Required at offer-creation time, but `ebay_publish.py` will use the corresponding env var if the draft omits it. Set the env vars in `~/.config/fb-to-ebay/.env` to avoid pasting policy IDs into every draft.
 

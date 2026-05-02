@@ -185,23 +185,39 @@ def build_dynamic_fulfillment_policy(env: dict, draft: dict, sku: str) -> dict:
     ship_intl = bool(draft["shipInternationally"]) if "shipInternationally" in draft else _env_bool(env, "EBAY_SHIP_INTERNATIONALLY", False)
     free_shipping = bool(draft.get("freeShipping", False))
 
-    domestic_service: dict = {
-        "sortOrder": 1,
-        "shippingCarrierCode": "USPS",
-        "shippingServiceCode": "USPSPriority",
-        "freeShipping": free_shipping,
-        "buyerResponsibleForShipping": False,
-        "buyerResponsibleForPickup": False,
-    }
-    if free_shipping:
-        domestic_service["shippingCost"] = {"value": "0.0", "currency": "USD"}
+    # Offer multiple USPS services by default so the buyer can choose between
+    # cheapest (Standard Post / Ground, 2-5d) and fastest (Priority, 1-3d).
+    # Override via EBAY_SHIPPING_SERVICES (comma-separated USPS service codes
+    # from GeteBayDetails). Caveats:
+    #   - Not every service supports CALCULATED rates. USPSGround and
+    #     USPSGroundAdvantage are FLAT_RATE-only (or production-only) — the
+    #     publish call will reject them when paired with CALCULATED.
+    #   - USPSStandardPost is the safest sandbox-compatible "ground" choice;
+    #     USPSPriority is the safest "fast" choice. Both work with CALCULATED.
+    #   - In production you may prefer USPSGroundAdvantage instead of
+    #     USPSStandardPost (the 2023 USPS rebrand).
+    services_csv = env.get("EBAY_SHIPPING_SERVICES") or "USPSStandardPost,USPSPriority"
+    service_codes = [s.strip() for s in services_csv.split(",") if s.strip()]
+    domestic_services: list[dict] = []
+    for i, code in enumerate(service_codes):
+        svc = {
+            "sortOrder": i + 1,
+            "shippingCarrierCode": "USPS",
+            "shippingServiceCode": code,
+            "freeShipping": free_shipping,
+            "buyerResponsibleForShipping": False,
+            "buyerResponsibleForPickup": False,
+        }
+        if free_shipping:
+            svc["shippingCost"] = {"value": "0.0", "currency": "USD"}
+        domestic_services.append(svc)
 
     shipping_options = [{
         "optionType": "DOMESTIC",
         # CALCULATED requires the inventory item to have packageWeightAndSize.
         # If it doesn't, eBay will reject publish — we surface a helpful error.
         "costType": "FLAT_RATE" if free_shipping else "CALCULATED",
-        "shippingServices": [domestic_service],
+        "shippingServices": domestic_services,
     }]
     if ship_intl:
         shipping_options.append({

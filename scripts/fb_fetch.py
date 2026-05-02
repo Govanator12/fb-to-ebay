@@ -190,13 +190,29 @@ def collect_listing_photos(page, og_img: str | None) -> list[str]:
         if not existing or _photo_size_score(url) > _photo_size_score(existing):
             by_id[file_id] = url
 
-    # Reorder so the og:image is first — that's FB's canonical cover photo,
-    # and eBay treats imageUrls[0] as the primary listing photo.
+    # Reorder so the cover photo is first — eBay treats imageUrls[0] as the
+    # primary listing photo. Two ways to find FB's cover:
+    #   1. og:image meta tag (only present on some logged-in renderings)
+    #   2. <img alt="Product photo of …"> — FB sets this on the listing's
+    #      main image element. We grep the HTML for src adjacent to that alt.
     cover_file_id = None
     if og_img:
         m = LISTING_PHOTO_PATH_RE.search(og_img)
         if m:
             cover_file_id = m.group(1)
+    if not cover_file_id:
+        m = re.search(
+            r'alt="Product photo of [^"]*"[^>]*src="(https?://[^"]+/t45\.5328-4/([0-9]+_[0-9]+_[0-9]+_n)\.jpg[^"]*)"',
+            html,
+        )
+        # The src= attribute may come BEFORE the alt= attribute too.
+        if not m:
+            m = re.search(
+                r'src="(https?://[^"]+/t45\.5328-4/([0-9]+_[0-9]+_[0-9]+_n)\.jpg[^"]*)"[^>]*alt="Product photo of',
+                html,
+            )
+        if m:
+            cover_file_id = m.group(2)
 
     photos: list[str] = []
     if cover_file_id and cover_file_id in by_id:

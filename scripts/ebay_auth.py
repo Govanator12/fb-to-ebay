@@ -25,8 +25,23 @@ from pathlib import Path
 import httpx
 
 CONFIG_DIR = Path.home() / ".config" / "fb-to-ebay"
-TOKEN_PATH = CONFIG_DIR / "token.json"
 ENV_PATH = CONFIG_DIR / ".env"
+
+# Keys whose value is environment-specific. The .env may set
+# EBAY_SANDBOX_<KEY> and EBAY_PRODUCTION_<KEY> independently; load_env
+# promotes the active environment's value to bare EBAY_<KEY> so the rest
+# of the codebase reads it as before. If only the bare EBAY_<KEY> is set,
+# it's used regardless of environment (legacy single-env layout).
+ENV_SCOPED_KEYS = (
+    "APP_ID", "CERT_ID", "DEV_ID", "RUNAME",
+    "FULFILLMENT_POLICY_ID", "PAYMENT_POLICY_ID", "RETURN_POLICY_ID",
+    "MERCHANT_LOCATION_KEY",
+)
+
+
+def token_path(env: dict[str, str]) -> Path:
+    """Per-environment token file so sandbox + production tokens coexist."""
+    return CONFIG_DIR / f"token-{env['EBAY_ENV']}.json"
 
 SCOPES = [
     "https://api.ebay.com/oauth/api_scope",
@@ -49,11 +64,21 @@ def load_env() -> dict[str, str]:
             continue
         k, v = line.split("=", 1)
         env[k.strip()] = v.strip().strip('"').strip("'")
-    for required in ("EBAY_APP_ID", "EBAY_CERT_ID", "EBAY_RUNAME", "EBAY_ENV"):
-        if required not in env:
-            sys.exit(f"{ENV_PATH} is missing {required}")
-    if env["EBAY_ENV"] not in ("sandbox", "production"):
-        sys.exit(f"EBAY_ENV must be 'sandbox' or 'production', got {env['EBAY_ENV']!r}")
+    if env.get("EBAY_ENV") not in ("sandbox", "production"):
+        sys.exit(f"EBAY_ENV must be 'sandbox' or 'production', got {env.get('EBAY_ENV')!r}")
+    # Promote env-scoped values to the bare key so a single .env can hold
+    # both sandbox and production credentials side by side.
+    prefix = f"EBAY_{env['EBAY_ENV'].upper()}_"
+    for suffix in ENV_SCOPED_KEYS:
+        scoped_val = env.get(prefix + suffix)
+        if scoped_val:
+            env[f"EBAY_{suffix}"] = scoped_val
+    for required in ("EBAY_APP_ID", "EBAY_CERT_ID", "EBAY_RUNAME"):
+        if not env.get(required):
+            sys.exit(
+                f"{ENV_PATH} is missing {required} (or {prefix}{required[5:]} "
+                f"for the active EBAY_ENV={env['EBAY_ENV']})"
+            )
     return env
 
 
@@ -70,20 +95,27 @@ def basic_auth(env: dict[str, str]) -> str:
     return base64.b64encode(raw).decode()
 
 
-def save_token(payload: dict) -> None:
+def save_token(env: dict[str, str], payload: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    path = token_path(env)
     payload["fetched_at"] = int(time.time())
-    TOKEN_PATH.write_text(json.dumps(payload, indent=2))
-    os.chmod(TOKEN_PATH, 0o600)
+    path.write_text(json.dumps(payload, indent=2))
+    os.chmod(path, 0o600)
 
 
-def load_token() -> dict:
-    if not TOKEN_PATH.exists():
+def load_token(env: dict[str, str]) -> dict:
+    path = token_path(env)
+    if not path.exists():
+        # Fall back to the legacy single-environment token file for backward
+        # compat with users who set up before the per-env split.
+        legacy = CONFIG_DIR / "token.json"
+        if legacy.exists():
+            return json.loads(legacy.read_text())
         sys.exit(
-            f"No cached token at {TOKEN_PATH}. Run "
+            f"No cached token at {path}. Run "
             f"`uv run {Path(__file__).resolve()} login` first."
         )
-    return json.loads(TOKEN_PATH.read_text())
+    return json.loads(path.read_text())
 
 
 def cmd_login(env: dict[str, str], redirect_url: str | None = None) -> None:
@@ -130,12 +162,12 @@ def cmd_login(env: dict[str, str], redirect_url: str | None = None) -> None:
     )
     if resp.status_code != 200:
         sys.exit(f"Token exchange failed ({resp.status_code}): {resp.text}")
-    save_token(resp.json())
-    print(f"\n✓ Saved token to {TOKEN_PATH}")
+    save_token(env, resp.json())
+    print(f"\n✓ Saved token to {token_path(env)}")
 
 
 def cmd_refresh(env: dict[str, str]) -> dict:
-    token = load_token()
+    token = load_token(env)
     if "refresh_token" not in token:
         sys.exit("Cached token has no refresh_token; run `login` again.")
     resp = httpx.post(
@@ -156,13 +188,13 @@ def cmd_refresh(env: dict[str, str]) -> dict:
     new_token = resp.json()
     # eBay refresh response doesn't return refresh_token; preserve the existing one.
     new_token.setdefault("refresh_token", token["refresh_token"])
-    save_token(new_token)
+    save_token(env, new_token)
     return new_token
 
 
 def get_access_token(env: dict[str, str]) -> str:
     """Library helper: return a valid access token, refreshing if expired."""
-    token = load_token()
+    token = load_token(env)
     expires_at = token.get("fetched_at", 0) + token.get("expires_in", 0) - 60
     if time.time() >= expires_at:
         token = cmd_refresh(env)

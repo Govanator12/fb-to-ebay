@@ -65,7 +65,7 @@ Restart your shell so `~/.local/bin` is on PATH. (Avoid the `astral-uv` snap —
    - **Auth accepted URL**, **Auth declined URL**, **Privacy policy URL**
    - eBay only stores the strings; it doesn't fetch them. After consent your browser will land at `<accepted-url>?code=...` and you'll copy the URL from the address bar.
    - **`https://localhost/...` URLs are rejected** by eBay's portal. Use `https://example.com/accepted` etc. instead.
-4. After saving, eBay shows your **RuName** — a string like `Steven_Hardy-StevenHa-fbcros-iuxlw`. That string (NOT the URLs you typed) is the value of `EBAY_RUNAME`.
+4. After saving, eBay shows your **RuName** — a string like `Yourname-yourapp-SBX-abc123def-1234abcd`. That string (NOT the URLs you typed) is the value of `EBAY_RUNAME`.
 
 ### 3. Register a sandbox test user
 

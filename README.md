@@ -72,7 +72,7 @@ Restart your shell so `~/.local/bin` is on PATH. (Avoid the `astral-uv` snap —
 Production uses your real eBay account, but **Sandbox is a separate database with fake users**. You must register one before the OAuth flow can complete.
 
 1. Go to <https://developer.ebay.com/sandbox/register> and create a user with any username + password.
-2. eBay automatically prepends `TESTUSER_` to your name. So if you registered as `stevehardy`, your sign-in username is `TESTUSER_stevehardy`. **This is the #1 reason "wrong password" errors happen on the OAuth flow** — eBay returns a generic password error when it can't find the user.
+2. eBay automatically prepends `TESTUSER_` to your username. So if you registered as `myusername`, your sign-in username is `TESTUSER_myusername`. **This is the #1 reason "wrong password" errors happen on the OAuth flow** — eBay returns a generic password error when it can't find the user.
 3. Manage / reset passwords for your sandbox users at <https://developer.ebay.com/develop/tools/sandbox>.
 
 ### 4. Configure `.env`

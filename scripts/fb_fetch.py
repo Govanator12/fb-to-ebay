@@ -183,7 +183,19 @@ def collect_listing_photos(page, og_img: str | None) -> list[str]:
         if not existing or _photo_size_score(url) > _photo_size_score(existing):
             by_id[file_id] = url
 
-    photos = list(by_id.values())
+    # Reorder so the og:image is first — that's FB's canonical cover photo,
+    # and eBay treats imageUrls[0] as the primary listing photo.
+    cover_file_id = None
+    if og_img:
+        m = LISTING_PHOTO_PATH_RE.search(og_img)
+        if m:
+            cover_file_id = m.group(1)
+
+    photos: list[str] = []
+    if cover_file_id and cover_file_id in by_id:
+        photos.append(by_id.pop(cover_file_id))
+    photos.extend(by_id.values())
+
     if not photos and og_img:
         photos.append(og_img)
     return photos

@@ -54,6 +54,18 @@ uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_taxonomy.py "<polished title>"
 
 Show all 3 suggestions with full category paths. Don't auto-select — categories are sticky.
 
+### 3a. Validate conditions for the chosen category
+
+Once the user picks a category, immediately run:
+
+```
+uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_conditions.py <categoryId>
+```
+
+This prints the valid condition IDs and the Inventory API enum to use. Many categories — especially collectibles, antiques, art — only support generic "Used" (id 3000), which means `USED_GOOD` / `USED_VERY_GOOD` / `USED_ACCEPTABLE` get rejected at publishOffer time. In those categories, map FB's "Used - Like New" / "Used - Good" / etc. to `USED_EXCELLENT` (the enum eBay translates to "Used"), and put the granular detail in `conditionDescription` so buyers see it.
+
+If the FB condition can't be honestly represented within what the category allows (e.g., FB "Used - Good" but the category only allows "New"), tell the user — don't quietly downgrade.
+
 ### 4. Resolve image hosting
 
 eBay needs publicly-reachable HTTPS image URLs. The FB URLs in `imageUrls` are signed and short-lived; eBay typically can't fetch them server-side. Ask the user to either re-host the downloaded images (paths in `localImages`) on Imgur/S3/their own server and paste the new URLs, or skip images for the first try and add them later via the eBay UI. Don't pretend the FB URLs will work — they usually don't.

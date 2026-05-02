@@ -29,6 +29,10 @@ from ebay_auth import api_host, get_access_token, load_env  # noqa: E402
 POLICY_ERROR_CODES = {25709, 25710, 25711}  # missing fulfillment / payment / return policy
 
 
+class PublishError(RuntimeError):
+    """Raised when an eBay API step fails, so we can roll back partial state."""
+
+
 def required(d: dict, key: str, where: str) -> object:
     if key not in d:
         sys.exit(f"Draft is missing required field {where}.{key}")
@@ -89,7 +93,7 @@ def explain_failure(resp: httpx.Response, step: str) -> None:
             print(json.dumps(body, indent=2), file=sys.stderr)
     except json.JSONDecodeError:
         print(resp.text, file=sys.stderr)
-    sys.exit(1)
+    raise PublishError(step)
 
 
 def create_inventory_item(env: dict, token: str, sku: str, draft: dict) -> None:
@@ -106,12 +110,34 @@ def create_inventory_item(env: dict, token: str, sku: str, draft: dict) -> None:
         body["product"]["aspects"] = draft["aspects"]
     if "conditionDescription" in draft:
         body["conditionDescription"] = draft["conditionDescription"]
+    pkg = build_package_weight_and_size(draft)
+    if pkg:
+        body["packageWeightAndSize"] = pkg
 
     url = f"https://{api_host(env)}/sell/inventory/v1/inventory_item/{sku}"
     resp = put_json(url, token, body)
     if resp.status_code not in (200, 204):
         explain_failure(resp, "createOrReplaceInventoryItem")
     print(f"✓ Inventory item created (sku={sku})")
+
+
+def build_package_weight_and_size(draft: dict) -> dict | None:
+    """Convert draft.weightLbs + draft.boxDimensionsIn into eBay's packageWeightAndSize."""
+    weight = draft.get("weightLbs")
+    dims = draft.get("boxDimensionsIn")
+    if weight is None and not dims:
+        return None
+    out: dict = {"packageType": "MAILING_BOX"}
+    if weight is not None:
+        out["weight"] = {"value": float(weight), "unit": "POUND"}
+    if dims and len(dims) == 3:
+        out["dimensions"] = {
+            "length": float(dims[0]),
+            "width": float(dims[1]),
+            "height": float(dims[2]),
+            "unit": "INCH",
+        }
+    return out
 
 
 def with_env_default(draft: dict, draft_key: str, env: dict, env_key: str, where: str) -> object:
@@ -141,34 +167,46 @@ def has_shipping_overrides(draft: dict, env: dict) -> bool:
 
 
 def build_dynamic_fulfillment_policy(env: dict, draft: dict, sku: str) -> dict:
-    """Build a fulfillment policy body from the listing's shipping settings."""
+    """Build a fulfillment policy body from the listing's shipping settings.
+
+    Defaults to USPS Priority CALCULATED rate (eBay computes cost from
+    package weight/dimensions + zip-to-zip), with the buyer paying. This
+    matches what most casual sellers want. Free shipping is opt-in via
+    `freeShipping: true` in the draft.
+    """
     handling_days = int(draft.get("handlingDays") or env.get("EBAY_DEFAULT_HANDLING_DAYS") or 2)
     local_pickup = bool(draft["localPickup"]) if "localPickup" in draft else _env_bool(env, "EBAY_OFFER_LOCAL_PICKUP", True)
     ship_intl = bool(draft["shipInternationally"]) if "shipInternationally" in draft else _env_bool(env, "EBAY_SHIP_INTERNATIONALLY", False)
+    free_shipping = bool(draft.get("freeShipping", False))
+
+    domestic_service: dict = {
+        "sortOrder": 1,
+        "shippingCarrierCode": "USPS",
+        "shippingServiceCode": "USPSPriority",
+        "freeShipping": free_shipping,
+        "buyerResponsibleForShipping": False,
+        "buyerResponsibleForPickup": False,
+    }
+    if free_shipping:
+        domestic_service["shippingCost"] = {"value": "0.0", "currency": "USD"}
 
     shipping_options = [{
         "optionType": "DOMESTIC",
-        "costType": "FLAT_RATE",
-        "shippingServices": [{
-            "sortOrder": 1,
-            "shippingCarrierCode": "USPS",
-            "shippingServiceCode": "USPSPriority",
-            "shippingCost": {"value": "0.0", "currency": "USD"},
-            "freeShipping": True,
-            "buyerResponsibleForShipping": False,
-            "buyerResponsibleForPickup": False,
-        }],
+        # CALCULATED requires the inventory item to have packageWeightAndSize.
+        # If it doesn't, eBay will reject publish — we surface a helpful error.
+        "costType": "FLAT_RATE" if free_shipping else "CALCULATED",
+        "shippingServices": [domestic_service],
     }]
     if ship_intl:
         shipping_options.append({
             "optionType": "INTERNATIONAL",
-            "costType": "FLAT_RATE",
+            "costType": "CALCULATED",
             "shippingServices": [{
                 "sortOrder": 1,
                 "shippingCarrierCode": "USPS",
                 "shippingServiceCode": "USPSPriorityMailInternational",
-                "shippingCost": {"value": "30.0", "currency": "USD"},
-                "buyerResponsibleForShipping": True,
+                "freeShipping": False,
+                "buyerResponsibleForShipping": False,
             }],
         })
 
@@ -339,10 +377,44 @@ def main() -> None:
             print(f"  ✓ {url}")
         draft["imageUrls"] = eps_urls
 
-    create_inventory_item(env, token, sku, draft)
-    offer_id = create_offer(env, token, sku, draft)
-    listing_id = publish_offer(env, token, offer_id)
-    print(f"\n→ {listing_url(env, listing_id)}")
+    # Track what we created so we can roll back on failure (avoids piling up
+    # orphan inventory items + offers across retries).
+    created_sku: str | None = None
+    created_offer_id: str | None = None
+    try:
+        create_inventory_item(env, token, sku, draft)
+        created_sku = sku
+        created_offer_id = create_offer(env, token, sku, draft)
+        listing_id = publish_offer(env, token, created_offer_id)
+        print(f"\n→ {listing_url(env, listing_id)}")
+    except PublishError as e:
+        print(f"\nRolling back partial state from {e}...", file=sys.stderr)
+        cleanup_orphans(env, token, created_sku, created_offer_id)
+        sys.exit(1)
+
+
+def cleanup_orphans(env: dict, token: str, sku: str | None, offer_id: str | None) -> None:
+    """Best-effort: delete an unpublished offer and the inventory item we just created."""
+    if offer_id:
+        try:
+            httpx.delete(
+                f"https://{api_host(env)}/sell/inventory/v1/offer/{offer_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+            print(f"  ✓ deleted offer {offer_id}", file=sys.stderr)
+        except Exception as e:
+            print(f"  ! could not delete offer {offer_id}: {e}", file=sys.stderr)
+    if sku:
+        try:
+            httpx.delete(
+                f"https://{api_host(env)}/sell/inventory/v1/inventory_item/{sku}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=30,
+            )
+            print(f"  ✓ deleted inventory item {sku}", file=sys.stderr)
+        except Exception as e:
+            print(f"  ! could not delete inventory item {sku}: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

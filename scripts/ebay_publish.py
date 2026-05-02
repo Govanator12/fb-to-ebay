@@ -36,8 +36,9 @@ def required(d: dict, key: str, where: str) -> object:
 
 
 def make_sku(title: str) -> str:
-    safe = "".join(c if c.isalnum() else "-" for c in title.lower())[:40].strip("-")
-    return f"{safe}-{int(time.time())}"
+    # eBay SKUs must be alphanumeric only (no hyphens / underscores), max 50 chars.
+    safe = "".join(c for c in title.lower() if c.isalnum())[:35]
+    return f"{safe}{int(time.time())}"
 
 
 def post_json(url: str, token: str, body: dict, lang: str = "en-US") -> httpx.Response:
@@ -182,7 +183,49 @@ def build_dynamic_fulfillment_policy(env: dict, draft: dict, sku: str) -> dict:
     }
 
 
-def create_fulfillment_policy(env: dict, token: str, body: dict) -> str:
+def list_fulfillment_policies(env: dict, token: str, marketplace_id: str) -> list[dict]:
+    url = f"https://{api_host(env)}/sell/account/v1/fulfillment_policy"
+    resp = httpx.get(
+        url,
+        headers={"Authorization": f"Bearer {token}", "X-EBAY-C-MARKETPLACE-ID": marketplace_id},
+        params={"marketplace_id": marketplace_id},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        return []
+    return resp.json().get("fulfillmentPolicies", []) or []
+
+
+def fulfillment_policies_match(existing: dict, wanted: dict) -> bool:
+    """Loose match — same handling/pickup/intl + same primary domestic service."""
+    if existing.get("handlingTime", {}).get("value") != wanted["handlingTime"]["value"]:
+        return False
+    if bool(existing.get("pickupDropOff")) != bool(wanted["pickupDropOff"]):
+        return False
+    if bool(existing.get("globalShipping")) != bool(wanted["globalShipping"]):
+        return False
+    # Compare just the first domestic shipping service code.
+    def primary_code(p: dict) -> str | None:
+        for opt in p.get("shippingOptions", []):
+            if opt.get("optionType") == "DOMESTIC":
+                services = opt.get("shippingServices", [])
+                if services:
+                    return services[0].get("shippingServiceCode")
+        return None
+    return primary_code(existing) == primary_code(wanted)
+
+
+def find_or_create_fulfillment_policy(env: dict, token: str, body: dict) -> str:
+    """Reuse an existing matching policy if one exists, else create a new one.
+
+    eBay dedupes fulfillment policies by content (refuses to create a duplicate
+    with the same handling/pickup/shipping config), so we look for an existing
+    match first.
+    """
+    for existing in list_fulfillment_policies(env, token, body["marketplaceId"]):
+        if fulfillment_policies_match(existing, body):
+            print(f"  → reusing existing policy {existing['fulfillmentPolicyId']} ({existing['name']!r})")
+            return existing["fulfillmentPolicyId"]
     url = f"https://{api_host(env)}/sell/account/v1/fulfillment_policy"
     resp = post_json(url, token, body)
     if resp.status_code not in (200, 201):
@@ -277,7 +320,7 @@ def main() -> None:
               f"(handling={body['handlingTime']['value']}d, "
               f"pickupDropOff={body['pickupDropOff']}, "
               f"international={len(body['shippingOptions']) > 1})...")
-        draft["fulfillmentPolicyId"] = create_fulfillment_policy(env, token, body)
+        draft["fulfillmentPolicyId"] = find_or_create_fulfillment_policy(env, token, body)
         print(f"  ✓ fulfillmentPolicyId={draft['fulfillmentPolicyId']}")
 
     # If the draft has localImages but no usable imageUrls, upload them to EPS

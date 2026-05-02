@@ -86,25 +86,34 @@ def load_token() -> dict:
     return json.loads(TOKEN_PATH.read_text())
 
 
-def cmd_login(env: dict[str, str]) -> None:
-    params = {
-        "client_id": env["EBAY_APP_ID"],
-        "response_type": "code",
-        "redirect_uri": env["EBAY_RUNAME"],
-        "scope": " ".join(SCOPES),
-    }
-    url = f"https://{auth_host(env)}/oauth2/authorize?{urllib.parse.urlencode(params)}"
-    print("\nOpen this URL in your browser, log in, and grant consent:\n")
-    print(url)
-    print(
-        "\nAfter approving, eBay will redirect you to your RuName's landing page. "
-        "Copy the FULL URL of that page (it contains ?code=...) and paste it below."
-    )
-    redirected = input("\nRedirect URL: ").strip()
-    parsed = urllib.parse.urlparse(redirected)
+def cmd_login(env: dict[str, str], redirect_url: str | None = None) -> None:
+    if redirect_url is None:
+        params = {
+            "client_id": env["EBAY_APP_ID"],
+            "response_type": "code",
+            "redirect_uri": env["EBAY_RUNAME"],
+            "scope": " ".join(SCOPES),
+        }
+        url = f"https://{auth_host(env)}/oauth2/authorize?{urllib.parse.urlencode(params)}"
+        print("\nOpen this URL in your browser, log in, and grant consent:\n")
+        print(url)
+        print(
+            "\nAfter approving, eBay will redirect you to your RuName's landing page. "
+            "Copy the FULL URL of that page (it contains ?code=...) and paste it below "
+            "— or re-run with --redirect-url <url> if you can't paste interactively."
+        )
+        try:
+            redirect_url = input("\nRedirect URL: ").strip()
+        except EOFError:
+            sys.exit(
+                "\nNo stdin available. Re-run with the redirect URL as a flag:\n"
+                f"  uv run {Path(__file__).name} login --redirect-url \"<paste-url-here>\""
+            )
+
+    parsed = urllib.parse.urlparse(redirect_url)
     code = urllib.parse.parse_qs(parsed.query).get("code", [None])[0]
     if not code:
-        sys.exit("Could not find ?code= in the URL you pasted.")
+        sys.exit("Could not find ?code= in the URL you provided.")
 
     resp = httpx.post(
         f"https://{api_host(env)}/identity/v1/oauth2/token",
@@ -163,10 +172,15 @@ def get_access_token(env: dict[str, str]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["login", "refresh", "token"])
+    parser.add_argument(
+        "--redirect-url",
+        help="(login only) Pass the post-consent redirect URL on the command line "
+        "instead of pasting it interactively. Useful when stdin isn't available.",
+    )
     args = parser.parse_args()
     env = load_env()
     if args.command == "login":
-        cmd_login(env)
+        cmd_login(env, redirect_url=args.redirect_url)
     elif args.command == "refresh":
         cmd_refresh(env)
         print("✓ Access token refreshed.")

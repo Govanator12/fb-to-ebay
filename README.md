@@ -92,7 +92,9 @@ cp ~/.claude/skills/fb-to-ebay/.env.example ~/.config/fb-to-ebay/.env
 $EDITOR ~/.config/fb-to-ebay/.env
 ```
 
-Fill in `EBAY_APP_ID`, `EBAY_CERT_ID`, `EBAY_DEV_ID`, `EBAY_RUNAME`. Leave `EBAY_ENV=sandbox` until you've done a full dry-run.
+Fill in `EBAY_SANDBOX_APP_ID`, `EBAY_SANDBOX_CERT_ID`, `EBAY_SANDBOX_DEV_ID`, `EBAY_SANDBOX_RUNAME` with your sandbox keyset values. Leave `EBAY_ENV=sandbox`. The matching `EBAY_PRODUCTION_*` block stays empty for now — fill it in later (see [Going to production](#going-to-production)) so a single `.env` holds both environments and you can flip between them just by changing `EBAY_ENV`.
+
+> **Backward-compat:** the bare unprefixed keys (`EBAY_APP_ID`, etc.) still work as a fallback if no env-prefixed value is set. Old single-env setups don't need to be migrated.
 
 ### 5. One-time OAuth login
 
@@ -110,7 +112,7 @@ uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py login --redirect-url "ht
 
 The double quotes are required — the URL contains `&` and `=` that the shell would otherwise interpret.
 
-The token is cached at `~/.config/fb-to-ebay/token.json` (mode `0600`). The access token lasts 2 hours and auto-refreshes; the refresh token is good for ~18 months. Scopes granted: `api_scope`, `sell.inventory`, `sell.account`, `commerce.catalog.readonly`. If you change `SCOPES` in `ebay_auth.py`, re-run `login` to mint a new token — refresh won't add scopes.
+The token is cached per-environment at `~/.config/fb-to-ebay/token-<env>.json` (e.g. `token-sandbox.json`, mode `0600`) so logging into one environment doesn't clobber the other. The access token lasts 2 hours and auto-refreshes; the refresh token is good for ~18 months. Scopes granted: `api_scope`, `sell.inventory`, `sell.account`. If you change `SCOPES` in `ebay_auth.py`, re-run `login` to mint a new token — refresh won't add scopes.
 
 ### 6. Opt into Business Policies, create policies, register a location
 
@@ -127,30 +129,44 @@ curl -X POST https://$HOST/sell/account/v1/program/opt_in \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"programType":"SELLING_POLICY_MANAGEMENT"}'
 
-# 6b. Fulfillment policy: USPS Priority, free domestic shipping, 1-day handling
+# 6b. Fulfillment policy: buyer-pays calculated USPS Parcel + Priority, 2-day handling.
+# Notes:
+# - costType CALCULATED requires the inventory item to have packageWeightAndSize.
+#   ebay_publish.py wires that in from the draft's weightLbs + boxDimensionsIn.
+# - USPSParcel is the canonical "ground" code that round-trips cleanly. eBay
+#   silently renames USPSStandardPost -> USPSParcel on storage, which breaks
+#   policy reuse. USPSGroundAdvantage is rejected by eBay's LSAS validator on
+#   some accounts. USPSParcel works in both sandbox and production.
+# - This is just a baseline; ebay_publish.py also creates per-listing policies
+#   when the draft has shipping overrides (handling/pickup/intl).
 curl -X POST https://$HOST/sell/account/v1/fulfillment_policy \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Content-Language: en-US" \
   -d '{
-    "name":"Default US Fulfillment","marketplaceId":"EBAY_US",
+    "name":"fb2ebay-default","marketplaceId":"EBAY_US",
     "categoryTypes":[{"name":"ALL_EXCLUDING_MOTORS_VEHICLES"}],
-    "handlingTime":{"value":1,"unit":"DAY"},
-    "shippingOptions":[{"optionType":"DOMESTIC","costType":"FLAT_RATE",
-      "shippingServices":[{"sortOrder":1,"shippingCarrierCode":"USPS","shippingServiceCode":"USPSPriority","freeShipping":true}]}]}'
+    "handlingTime":{"value":2,"unit":"DAY"},
+    "shippingOptions":[{"optionType":"DOMESTIC","costType":"CALCULATED",
+      "shippingServices":[
+        {"sortOrder":1,"shippingCarrierCode":"USPS","shippingServiceCode":"USPSParcel","freeShipping":false,"buyerResponsibleForShipping":false,"buyerResponsibleForPickup":false},
+        {"sortOrder":2,"shippingCarrierCode":"USPS","shippingServiceCode":"USPSPriority","freeShipping":false,"buyerResponsibleForShipping":false,"buyerResponsibleForPickup":false}
+      ]}],
+    "pickupDropOff":false,"globalShipping":false}'
 
 # 6c. Payment policy: immediate payment via eBay Managed Payments
 curl -X POST https://$HOST/sell/account/v1/payment_policy \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Content-Language: en-US" \
-  -d '{
-    "name":"Default Payment Policy","marketplaceId":"EBAY_US",
-    "categoryTypes":[{"name":"ALL_EXCLUDING_MOTORS_VEHICLES"}],"immediatePay":true}'
+  -d '{"name":"fb2ebay-default","marketplaceId":"EBAY_US",
+       "categoryTypes":[{"name":"ALL_EXCLUDING_MOTORS_VEHICLES"}],"immediatePay":true}'
 
-# 6d. Return policy: 30-day money-back, buyer pays return shipping
+# 6d. Return policy: no returns by default. (Most categories accept this; some
+# — newer electronics — require returns. Edit later if you hit that.) If you
+# prefer 30-day money-back, swap returnsAccepted to true and add
+# "returnPeriod":{"value":30,"unit":"DAY"},"refundMethod":"MONEY_BACK",
+# "returnShippingCostPayer":"BUYER" to the body.
 curl -X POST https://$HOST/sell/account/v1/return_policy \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Content-Language: en-US" \
-  -d '{
-    "name":"Default Return Policy","marketplaceId":"EBAY_US",
-    "returnsAccepted":true,"returnPeriod":{"value":30,"unit":"DAY"},
-    "refundMethod":"MONEY_BACK","returnShippingCostPayer":"BUYER"}'
+  -d '{"name":"fb2ebay-default","marketplaceId":"EBAY_US",
+       "categoryTypes":[{"name":"ALL_EXCLUDING_MOTORS_VEHICLES"}],"returnsAccepted":false}'
 
 # 6e. Register an inventory location (replace the address with yours)
 curl -X POST https://$HOST/sell/inventory/v1/location/default \
@@ -160,14 +176,16 @@ curl -X POST https://$HOST/sell/inventory/v1/location/default \
     "name":"Default location","merchantLocationStatus":"ENABLED","locationTypes":["WAREHOUSE"]}'
 ```
 
-Each policy call returns a JSON body with the policy ID (`fulfillmentPolicyId`, `paymentPolicyId`, `returnPolicyId`). Append them to your `.env` so `ebay_publish.py` doesn't make you paste them into every draft:
+Each policy call returns a JSON body with the policy ID (`fulfillmentPolicyId`, `paymentPolicyId`, `returnPolicyId`). Append them to your `.env` under the env-prefixed keys so a single `.env` can carry both sandbox and production:
 
 ```
-EBAY_FULFILLMENT_POLICY_ID=<id from 6b>
-EBAY_PAYMENT_POLICY_ID=<id from 6c>
-EBAY_RETURN_POLICY_ID=<id from 6d>
-EBAY_MERCHANT_LOCATION_KEY=default
+EBAY_SANDBOX_FULFILLMENT_POLICY_ID=<id from 6b>
+EBAY_SANDBOX_PAYMENT_POLICY_ID=<id from 6c>
+EBAY_SANDBOX_RETURN_POLICY_ID=<id from 6d>
+EBAY_SANDBOX_MERCHANT_LOCATION_KEY=default
 ```
+
+(Use the `EBAY_PRODUCTION_*` prefix when you do the same setup against production. Bare `EBAY_FULFILLMENT_POLICY_ID` etc. still work as a backward-compat fallback.)
 
 ### 7. Verify
 
@@ -198,6 +216,24 @@ uv run ~/.claude/skills/fb-to-ebay/scripts/fb_session.py
 
 A real Chromium window opens. Log in to FB by hand (handles 2FA / CAPTCHA naturally). When you can see your news feed, return to the terminal and press Enter. Cookies are cached at `~/.config/fb-to-ebay/fb_session.json`. Re-run any time the session expires (FB usually keeps you logged in for weeks).
 
+## Going to production
+
+After steps 1-9 give you a working sandbox, the move to production looks like this:
+
+1. **Confirm Managed Payments is active on your real eBay account** at <https://www.ebay.com/sh/ovw> → Payments. New sellers need to complete bank-account linking + identity verification before any `publishOffer` call will succeed.
+2. **Create a production application keyset** at <https://developer.ebay.com/my/keys> (Production tab). New developer accounts may be blocked by the marketplace-deletion requirement — see step 2 above.
+3. **Create a production RuName** the same way as the sandbox one. Production tends to want a real privacy-policy URL eventually, but the same `https://example.com/...` placeholders work for getting started.
+4. **Add the prod values** to `.env` under `EBAY_PRODUCTION_APP_ID`, `EBAY_PRODUCTION_CERT_ID`, `EBAY_PRODUCTION_DEV_ID`, `EBAY_PRODUCTION_RUNAME`.
+5. **Flip `EBAY_ENV=production`** and re-run `ebay_auth.py login` to mint a `token-production.json` against your real eBay account.
+6. **Run the same step-6 setup** (opt-in + 3 policies + location) but against `api.ebay.com` instead of `api.sandbox.ebay.com`. Save the new IDs under `EBAY_PRODUCTION_*` keys in `.env`.
+7. **Production-only quirks to know about**:
+   - `USPSGroundAdvantage` is rejected by eBay's LSAS validator on some accounts even though it's the "official" 2023 USPS rebrand. `USPSParcel` works everywhere — that's the default.
+   - `commerce.catalog.readonly` scope requires explicit eBay approval and is unused by this skill (already removed).
+   - First listing incurs a free insertion fee (most casual sellers get ~250/month free), then ~13% final-value fee + payment-processing fee on sale.
+   - Once a real listing publishes, real buyers can buy it. Be ready to ship within your handling-time SLA.
+
+A single `.env` carries both sets of credentials side-by-side. Switch envs by changing only the `EBAY_ENV=` line — no need to re-edit anything else.
+
 ## Usage
 
 In Claude Code:
@@ -215,9 +251,11 @@ All scripts are standalone — they declare their own dependencies via [PEP 723 
 
 | Script | Direction | Purpose |
 |---|---|---|
-| `scripts/ebay_auth.py` | both | OAuth login + token refresh + `token` subcommand. Supports `--redirect-url` for non-interactive shells. |
+| `scripts/ebay_auth.py` | both | OAuth login + token refresh + `token` subcommand. Per-env tokens; supports `--redirect-url` for non-interactive shells. |
 | `scripts/ebay_taxonomy.py` | FB→eBay | Suggest top-3 eBay categories for a title |
-| `scripts/ebay_publish.py` | FB→eBay | Publish a draft via the Inventory API chain; supports `--dry-run` |
+| `scripts/ebay_conditions.py` | FB→eBay | List the valid condition IDs + Inventory-API enums for a category (call before picking a condition) |
+| `scripts/ebay_eps.py` | FB→eBay | Upload local image files to eBay Picture Services, return eBay-hosted URLs (called automatically by ebay_publish) |
+| `scripts/ebay_publish.py` | FB→eBay | Publish a draft via the Inventory API chain; auto-uploads localImages via EPS, mints per-listing fulfillment policies, rolls back orphans on failure; supports `--dry-run` |
 | `scripts/ebay_fetch.py` | eBay→FB | Pull an eBay listing into a draft via the Browse API |
 | `scripts/fb_session.py` | both | One-time interactive FB login, saves cookies |
 | `scripts/fb_fetch.py` | FB→eBay | Scrape a Marketplace URL via Playwright, download images |
@@ -232,13 +270,15 @@ fb-to-ebay/
 ├── .env.example          # template for ~/.config/fb-to-ebay/.env
 ├── .gitignore
 ├── scripts/
-│   ├── ebay_auth.py
-│   ├── ebay_taxonomy.py
-│   ├── ebay_publish.py
-│   ├── ebay_fetch.py     # eBay → FB read
-│   ├── fb_session.py     # one-time FB login
-│   ├── fb_fetch.py       # FB → eBay read
-│   └── fb_post.py        # eBay → FB write (pre-fills form)
+│   ├── ebay_auth.py        # OAuth login + per-env token cache
+│   ├── ebay_taxonomy.py    # category suggestions
+│   ├── ebay_conditions.py  # valid conditions for a category
+│   ├── ebay_eps.py         # upload local images to eBay Picture Services
+│   ├── ebay_publish.py     # publish chain (auto-EPS, dynamic policy, rollback)
+│   ├── ebay_fetch.py       # eBay → FB read
+│   ├── fb_session.py       # one-time FB login
+│   ├── fb_fetch.py         # FB → eBay read
+│   └── fb_post.py          # eBay → FB write (pre-fills form)
 └── references/
     ├── ebay_field_map.md # condition codes, title rules, required fields
     ├── fb_field_map.md   # FB condition strings, category list, mapping
@@ -253,14 +293,15 @@ Using `fb_post.py` and (to a lesser extent) `fb_fetch.py` puts your personal Fac
 - Don't bulk-post. Spread runs over hours; volume isn't the only signal — rate is.
 - If FB throws a security challenge, solve it in the open browser, then re-run `fb_session.py` to refresh cookies.
 - Keep `fb_post.py --auto-publish` off until you've done several successful manual reviews.
-- This branch is **experimental**. Selectors will break when FB rewrites their DOM. Be ready to fix them.
+- The FB scrape relies on undocumented DOM patterns. Selectors will break when FB rewrites their UI. Be ready to fix them.
 
 ## Known limitations
 
 - **Selector brittleness.** FB has no public API; the scripts walk a React-rendered DOM. Things will break.
-- **Image hosting (FB→eBay).** Even with Playwright downloading images locally, the eBay side needs publicly-reachable URLs. The current workflow asks you to re-host on Imgur/S3/etc. A future iteration could add eBay Picture Services (EPS) upload.
+- **Sandbox shipping rates are fake.** Sandbox uses canned (often inflated) rates instead of real USPS pricing. Production rates are realistic.
 - **Sandbox vs production.** Default is sandbox. Always do a full sandbox dry-run before flipping `EBAY_ENV=production`.
 - **Single account.** Tokens and sessions are per-user; no multi-account support.
+- **Calculated rate only.** The default fulfillment policy is calculated USPS Parcel + Priority. Flat-rate or calculated-with-other-carriers requires editing the policy by hand or extending `build_dynamic_fulfillment_policy` in `ebay_publish.py`.
 
 ## License
 

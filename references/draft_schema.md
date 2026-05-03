@@ -39,7 +39,8 @@ Write this to a temp file (e.g. `/tmp/ebay-draft.json`) before invoking the publ
 | `price.value` | yes | String, decimal (e.g. "45.00") |
 | `price.currency` | no | Defaults to "USD" |
 | `quantity` | no | Defaults to 1 |
-| `imageUrls` | yes | Array of publicly-accessible HTTPS URLs |
+| `imageUrls` | yes\* | Array of publicly-accessible HTTPS URLs (e.g. eBay-hosted, Imgur). \*Optional if `localImages` is set — the publish script will EPS-upload them and populate `imageUrls` automatically. |
+| `localImages` | yes\* | Array of local file paths. Auto-uploaded to eBay Picture Services (EPS) at publish time. \*Optional if `imageUrls` is already set with reachable URLs. |
 | `aspects` | no | `{ "Brand": ["..."], "Size": ["..."] }` — required by some categories |
 | `marketplaceId` | no | Defaults to `EBAY_MARKETPLACE_ID` env var (or `EBAY_US`) |
 | `merchantLocationKey` | yes* | Inventory location key, usually `"default"`. Falls back to `EBAY_MERCHANT_LOCATION_KEY` env var. |
@@ -50,22 +51,21 @@ Write this to a temp file (e.g. `/tmp/ebay-draft.json`) before invoking the publ
 | `handlingDays` | no | Per-listing handling time override (business days). Falls back to `EBAY_DEFAULT_HANDLING_DAYS`, then 2. |
 | `localPickup` | no | Per-listing local-pickup override (true/false). Falls back to `EBAY_OFFER_LOCAL_PICKUP`, then true. |
 | `shipInternationally` | no | Per-listing international-shipping override. Falls back to `EBAY_SHIP_INTERNATIONALLY`, then false. |
-| `weightLbs` | no | Item weight; reserved for future calculated-rate support, no effect today. |
-| `boxDimensionsIn` | no | Box dimensions `[L, W, H]` in inches; reserved for calculated rates, no effect today. |
+| `weightLbs` | recommended | Item weight in pounds. Wired into the inventory item's `packageWeightAndSize.weight` block — required for CALCULATED shipping rates to actually compute. |
+| `boxDimensionsIn` | recommended | Box dimensions `[L, W, H]` in inches. Wired into `packageWeightAndSize.dimensions`. Required alongside `weightLbs` for CALCULATED rates. |
+| `freeShipping` | no | If `true`, the per-listing fulfillment policy uses FLAT_RATE with $0 shipping (seller eats it). Default `false` (CALCULATED, buyer pays). |
 
 If any of `handlingDays`, `localPickup`, `shipInternationally` (or their env equivalents) are set, `ebay_publish.py` mints a fresh per-listing fulfillment policy on the fly via `createFulfillmentPolicy` and uses its ID instead of `EBAY_FULFILLMENT_POLICY_ID`. Otherwise the env-default policy is used as-is.
 
 \* Required at offer-creation time, but `ebay_publish.py` will use the corresponding env var if the draft omits it. Set the env vars in `~/.config/fb-to-ebay/.env` to avoid pasting policy IDs into every draft.
 
-### Image URL caveat
+### Images
 
-eBay fetches `imageUrls` server-side. **Facebook's CDN URLs are signed and expire**, so passing an `fbcdn.net` URL directly often fails (eBay sees a 403 or expired signature). Workarounds, in order of effort:
+`ebay_publish.py` automatically uploads any `localImages` to eBay Picture Services (EPS) via `ebay_eps.py` and replaces them with eBay-hosted URLs in the inventory item. This is the standard path for FB→eBay listings — `fb_fetch.py` downloads the photos to a local cache, the publish script uploads them to EPS, eBay stores them on its own CDN.
 
-1. The user re-uploads images to Imgur or another public host and pastes those URLs.
-2. The user hosts them on their own server / S3 bucket / GitHub Pages.
-3. Future: add an EPS (eBay Picture Services) upload helper to this skill that re-hosts images on eBay's CDN. Not implemented in v1.
+You can also pass pre-hosted `imageUrls` directly (e.g. eBay-hosted from a previous run, Imgur URLs, your own S3 bucket) and skip `localImages` entirely.
 
-If the publish fails with an image-fetch error, surface the URL eBay couldn't reach and ask the user to re-host that image.
+**Don't pass FB CDN URLs (`fbcdn.net`) directly.** They're signed and expire within minutes; eBay's server-side fetch will 403. Use `localImages` so the upload happens immediately while the URL is still valid.
 
 ## FB-side schema (consumed by `fb_post.py`)
 

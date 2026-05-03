@@ -26,8 +26,8 @@ Decide direction from what the user pasted:
 
 Before doing real work:
 
-1. `~/.config/fb-to-ebay/.env` exists with `EBAY_APP_ID`, `EBAY_CERT_ID`, `EBAY_DEV_ID`, `EBAY_RUNAME`, `EBAY_ENV`. Missing? Point at `.env.example` in the skill directory and stop.
-2. `~/.config/fb-to-ebay/token.json` exists. Missing? Tell the user to run `uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py login` and ask before running it on their behalf — it opens a browser. (Two-step form for non-interactive shells: print the URL with `login`, complete with `login --redirect-url "<pasted-url>"`.)
+1. `~/.config/fb-to-ebay/.env` exists with `EBAY_ENV` set and the corresponding env-prefixed credentials populated (e.g. `EBAY_SANDBOX_APP_ID` / `EBAY_SANDBOX_CERT_ID` / `EBAY_SANDBOX_DEV_ID` / `EBAY_SANDBOX_RUNAME` when `EBAY_ENV=sandbox`). Missing? Point at `.env.example` in the skill directory and stop. (Bare `EBAY_APP_ID` etc. still work as a legacy fallback.)
+2. `~/.config/fb-to-ebay/token-{env}.json` exists for the active environment (e.g. `token-sandbox.json` or `token-production.json`). Missing? Tell the user to run `uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py login` and ask before running it on their behalf — it opens a browser. (Two-step form for non-interactive shells: print the URL with `login`, complete with `login --redirect-url "<pasted-url>"`.)
 3. **For any FB-side step:** `~/.config/fb-to-ebay/fb_session.json` exists. Missing? Tell the user to run `uv run ~/.claude/skills/fb-to-ebay/scripts/fb_session.py` (one-time, ~30 seconds, manual login). Ask before running.
 4. **For any FB-side step:** Playwright's Chromium binary is installed. If not, the script will print the install command (`uv run --with playwright playwright install chromium`) — don't try to install it silently.
 5. `EBAY_ENV` value: surface it in chat ("publishing to **sandbox**") so the user never confuses environments. Default sandbox in any first-time interaction.
@@ -66,9 +66,9 @@ This prints the valid condition IDs and the Inventory API enum to use. Many cate
 
 If the FB condition can't be honestly represented within what the category allows (e.g., FB "Used - Good" but the category only allows "New"), tell the user — don't quietly downgrade.
 
-### 4. Resolve image hosting
+### 4. Images (automatic)
 
-eBay needs publicly-reachable HTTPS image URLs. The FB URLs in `imageUrls` are signed and short-lived; eBay typically can't fetch them server-side. Ask the user to either re-host the downloaded images (paths in `localImages`) on Imgur/S3/their own server and paste the new URLs, or skip images for the first try and add them later via the eBay UI. Don't pretend the FB URLs will work — they usually don't.
+`ebay_publish.py` auto-uploads any `localImages` to eBay Picture Services (EPS) at publish time and uses the resulting eBay-hosted URLs in the inventory item. You don't need to ask the user to re-host anywhere. Just keep the `localImages` paths from `fb_fetch.py` in the draft and let the publish script handle it.
 
 ### 5. Confirm shipping/listing details
 
@@ -98,7 +98,14 @@ Write the approved draft to a temp JSON file matching `references/draft_schema.m
 uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_publish.py --draft /tmp/ebay-draft.json
 ```
 
-Policy IDs and merchant location auto-fill from `.env` if not in the draft. The script prints the live listing URL on success.
+What the script does for you automatically:
+- Mints a per-listing fulfillment policy via `createFulfillmentPolicy` if the draft has shipping overrides (handlingDays / localPickup / shipInternationally) or any of the corresponding env defaults are set; reuses an existing matching policy if one is already there.
+- Uploads each path in `localImages` to eBay Picture Services (EPS) and uses the eBay-hosted URLs in the inventory item.
+- Builds `packageWeightAndSize` from `weightLbs` + `boxDimensionsIn` so calculated rates work.
+- Falls back to env-default policy IDs (`EBAY_*_FULFILLMENT_POLICY_ID` etc.) and merchant location key when not in the draft.
+- Rolls back orphan inventory items + offers if any step fails (no debris piles up across retries).
+
+Prints the live listing URL on success.
 
 ## Workflow B: eBay → Facebook
 
@@ -139,7 +146,10 @@ Opens a real Chromium window with the create-listing form pre-filled. **By defau
 - **Missing eBay business policies** (`Error 25709` or similar payment/return/fulfillment policy errors): account hasn't set up policies yet. Production users can use https://www.ebay.com/sh/policies in the seller hub UI; sandbox users have to use the Account API directly (the seller hub for policies isn't reliable on sandbox). Either way, the README's "Setup → step 6" section walks through opting in, creating the three policies, and registering an inventory location. After setup, write the resulting IDs into the user's `.env` (`EBAY_FULFILLMENT_POLICY_ID`, `EBAY_PAYMENT_POLICY_ID`, `EBAY_RETURN_POLICY_ID`) so they don't need to live in every draft.
 - **Missing inventory location** (`Error 25007` or "merchant location key not found"): same root cause — first-time setup. Create one with `POST /sell/inventory/v1/location/{key}` (see README step 6e) and put `EBAY_MERCHANT_LOCATION_KEY=<key>` in `.env`.
 - **Category requires aspects** (`Error 25002`, "item specific X is missing"): the chosen `categoryId` requires structured item-specifics. Call `GET /commerce/taxonomy/v1/category_tree/{tree}/get_item_aspects_for_category?category_id=<id>` to see what's needed, ask the user for the values, add them under `aspects: { ... }` in the draft, retry.
-- **Image upload fails on eBay**: usually the FB image URL has expired (signed/short-lived). Ask the user to re-host the local copies.
+- **EPS upload fails** (Trading API XML error from `ebay_eps.py`): usually the local image file is missing/corrupt or eBay's EPS service is having a hiccup. Confirm the local file exists and try again. EPS-hosted images expire after 30 days if not associated with an active listing — fine since we publish immediately.
+- **`Invalid <ShippingPackage>`** (errorId 25101): the chosen shipping service doesn't accept CALCULATED rates with the given package, or `packageType` is incompatible with the service. The publish script omits packageType deliberately to avoid this. If it still fires, swap the shipping service (try `USPSParcel` or `USPSPriority`) or check that weight + dimensions are sane.
+- **`LSAS validation failed`** when creating a fulfillment policy: eBay's Listing Shipping Advisor Service rejected a service code on this account. `USPSGroundAdvantage` is a known offender on some accounts despite being the modern code. Use `USPSParcel` instead (set `EBAY_SHIPPING_SERVICES=USPSParcel,USPSPriority`).
+- **`invalid_scope`** at OAuth time on production: a requested OAuth scope isn't granted to the app on production. Check the SCOPES list in `ebay_auth.py` against what's allowed — `commerce.catalog.readonly` was previously a culprit and has been removed.
 - **FB login expired** (fb_fetch returns mostly-empty fields, fb_post can't reach the form): re-run `fb_session.py`.
 - **FB security challenge mid-script**: the open browser will show a CAPTCHA or identity check. Have the user solve it manually, then press Enter to continue. Re-run `fb_session.py` afterward to capture refreshed cookies.
 - **Selector breakage on FB**: FB rewrites its DOM frequently. If `fb_fetch.py` returns mostly-empty fields, or `fb_post.py` warns about fields it couldn't fill, the selectors in those scripts need updating. Tell the user — don't pretend the data is good.

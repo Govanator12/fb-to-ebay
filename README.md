@@ -1,47 +1,41 @@
 # fb-to-ebay
 
-A [Claude Code](https://claude.com/claude-code) skill that mirrors a listing between Facebook Marketplace and eBay in either direction. You paste a Marketplace or eBay URL into Claude; it fetches the listing, polishes the fields for the destination platform's conventions, and (after you approve) publishes — eBay via the Sell APIs, Facebook via Playwright pre-filling the create-listing form for you to review and submit.
+A [Claude Code](https://claude.com/claude-code) skill that crossposts a Facebook Marketplace listing to eBay. You paste a Marketplace URL into Claude; it scrapes the listing, polishes the title and description for eBay's conventions, picks a category, and (after you approve) publishes via the eBay Sell APIs.
 
-The "intelligence" — extracting fields, normalizing copy, mapping conditions, picking a category — happens inside your existing Claude Code session, so it doesn't cost anything beyond your Claude subscription. Only the platform-side calls run as code.
+The "intelligence" — extracting fields, normalizing copy, mapping conditions, picking a category — happens inside your existing Claude Code session, so it doesn't cost anything beyond your Claude subscription. Only the eBay-side calls run as code.
 
 ## How it works
 
 ```
-                ┌──────────────────────────────────────┐
-                │   You paste a URL into Claude        │
-                └─────────────────┬────────────────────┘
-                                  │
-            ┌─────────────────────┴─────────────────────┐
-            │                                           │
-   facebook.com/marketplace                  ebay.com/itm/...
-            │                                           │
-            ▼                                           ▼
-┌────────────────────────┐                 ┌────────────────────────┐
-│ fb_fetch.py            │                 │ ebay_fetch.py          │
-│ (Playwright + saved    │                 │ (Browse API)           │
-│  FB session)           │                 │                        │
-│ - title, desc, price   │                 │ - title, desc, price   │
-│ - condition string     │                 │ - condition enum       │
-│ - downloads images     │                 │ - downloads images     │
-└────────────┬───────────┘                 └────────────┬───────────┘
-             │                                          │
-             ▼                                          ▼
-   ┌─────────────────────────────────────────────────────────────┐
-   │  Claude polishes copy, maps fields, suggests category,      │
-   │  shows draft in chat, waits for your approval               │
-   └─────────────────────────┬───────────────────────────────────┘
-                             │
-            ┌────────────────┴────────────────┐
-            │                                 │
-            ▼                                 ▼
-┌────────────────────────┐       ┌────────────────────────┐
-│ ebay_publish.py        │       │ fb_post.py             │
-│ (Sell Inventory API)   │       │ (Playwright)           │
-│ - inventory_item       │       │ - opens create-listing │
-│ - offer                │       │   form pre-filled      │
-│ - publishOffer         │       │ - YOU click Publish    │
-└────────────────────────┘       └────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  You paste a facebook.com/marketplace URL into Claude            │
+└──────────────────────────────┬───────────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ fb_fetch.py (Playwright + saved FB session)                      │
+│ - extracts title, description, price, condition, photos          │
+│ - downloads images locally to ~/.cache/fb-to-ebay/<slug>/        │
+└──────────────────────────────┬───────────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ Claude polishes title for eBay search, expands description,      │
+│ runs ebay_taxonomy.py for category, ebay_conditions.py for       │
+│ valid condition enums, asks you for weight + dimensions,         │
+│ shows the draft, waits for explicit approval                     │
+└──────────────────────────────┬───────────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ ebay_publish.py (Sell Inventory API)                             │
+│ - mints a per-listing fulfillment policy (calculated rates)      │
+│ - uploads photos to eBay Picture Services (EPS)                  │
+│ - createInventoryItem → createOffer → publishOffer               │
+│ - rolls back orphans on failure                                  │
+└──────────────────────────────┬───────────────────────────────────┘
+                               ▼
+                         live eBay URL
 ```
+
+The reverse direction (eBay → FB) is **not implemented** in this repo — the skill is one-way, FB → eBay. FB has no public listing-write API for individuals; posting on FB requires Playwright form-driving, which is feasible but hasn't been validated end-to-end. If you want it later, contributions welcome.
 
 ## Install
 
@@ -49,7 +43,7 @@ The "intelligence" — extracting fields, normalizing copy, mapping conditions, 
 git clone https://github.com/Govanator12/fb-to-ebay.git ~/.claude/skills/fb-to-ebay
 ```
 
-Claude Code auto-discovers skills in `~/.claude/skills/`. The skill triggers when you paste a `facebook.com/marketplace` URL, an `ebay.com/itm` URL, or ask Claude to "crosspost" or "mirror" a listing in either direction.
+Claude Code auto-discovers skills in `~/.claude/skills/`. The skill triggers when you paste a `facebook.com/marketplace` URL or ask Claude to "crosspost", "mirror", or "list this on eBay".
 
 ## Setup
 
@@ -206,7 +200,7 @@ The taxonomy call should print three category suggestions as JSON. The opt-in ch
 uv run --with playwright playwright install chromium
 ```
 
-This branch uses Playwright for the FB side (`fb_fetch.py` for reads, `fb_post.py` for writes). The Chromium download is ~170 MB; the install is one-time per machine.
+`fb_fetch.py` uses Playwright to scrape Marketplace listings (FB has no public read API). The Chromium download is ~170 MB; the install is one-time per machine.
 
 ### 9. Capture a Facebook session
 
@@ -236,14 +230,13 @@ A single `.env` carries both sets of credentials side-by-side. Switch envs by ch
 
 ## Usage
 
-In Claude Code:
+In Claude Code, paste a Facebook Marketplace listing URL:
 
 ```
-> https://www.facebook.com/marketplace/item/1234567890     # FB → eBay
-> https://www.ebay.com/itm/123456789012                    # eBay → FB
+> https://www.facebook.com/marketplace/item/1234567890
 ```
 
-Claude detects the direction from the URL, runs the right fetch script, proposes a draft in chat, you approve or edit, and it publishes (or pre-fills the FB form for you to submit).
+The skill auto-triggers, runs `fb_fetch.py`, proposes a draft, you approve or edit, and it publishes to eBay. See `SKILL.md` for the full workflow Claude follows.
 
 ## Non-US sellers
 
@@ -264,17 +257,15 @@ The default fulfillment policy in step 6b also assumes USPS — replace `shippin
 
 All scripts are standalone — they declare their own dependencies via [PEP 723 inline metadata](https://peps.python.org/pep-0723/) and run with [uv](https://docs.astral.sh/uv/). No project venv to manage.
 
-| Script | Direction | Purpose |
-|---|---|---|
-| `scripts/ebay_auth.py` | both | OAuth login + token refresh + `token` subcommand. Per-env tokens; supports `--redirect-url` for non-interactive shells. |
-| `scripts/ebay_taxonomy.py` | FB→eBay | Suggest top-3 eBay categories for a title |
-| `scripts/ebay_conditions.py` | FB→eBay | List the valid condition IDs + Inventory-API enums for a category (call before picking a condition) |
-| `scripts/ebay_eps.py` | FB→eBay | Upload local image files to eBay Picture Services, return eBay-hosted URLs (called automatically by ebay_publish) |
-| `scripts/ebay_publish.py` | FB→eBay | Publish a draft via the Inventory API chain; auto-uploads localImages via EPS, mints per-listing fulfillment policies, rolls back orphans on failure; supports `--dry-run` |
-| `scripts/ebay_fetch.py` | eBay→FB | Pull an eBay listing into a draft via the Browse API |
-| `scripts/fb_session.py` | both | One-time interactive FB login, saves cookies |
-| `scripts/fb_fetch.py` | FB→eBay | Scrape a Marketplace URL via Playwright, download images |
-| `scripts/fb_post.py` | eBay→FB | Pre-fill the FB create-listing form via Playwright |
+| Script | Purpose |
+|---|---|
+| `scripts/ebay_auth.py` | OAuth login + token refresh + `token` subcommand. Per-env tokens (`token-sandbox.json` / `token-production.json`); supports `--redirect-url` for non-interactive shells. |
+| `scripts/ebay_taxonomy.py` | Suggest top-3 eBay categories for a title via the Commerce Taxonomy API |
+| `scripts/ebay_conditions.py` | List the valid condition IDs + Inventory-API enums for a chosen category (call before picking a condition) |
+| `scripts/ebay_eps.py` | Upload local image files to eBay Picture Services, return eBay-hosted URLs (called automatically by `ebay_publish`) |
+| `scripts/ebay_publish.py` | Publish a draft via the Inventory API chain; auto-uploads `localImages` via EPS, mints per-listing fulfillment policies, rolls back orphans on failure; supports `--dry-run` |
+| `scripts/fb_session.py` | One-time interactive FB login (headed Chromium); saves session cookies |
+| `scripts/fb_fetch.py` | Scrape a Marketplace listing URL via Playwright using the saved session, download images locally |
 
 ## Repo layout
 
@@ -290,25 +281,20 @@ fb-to-ebay/
 │   ├── ebay_conditions.py  # valid conditions for a category
 │   ├── ebay_eps.py         # upload local images to eBay Picture Services
 │   ├── ebay_publish.py     # publish chain (auto-EPS, dynamic policy, rollback)
-│   ├── ebay_fetch.py       # eBay → FB read
 │   ├── fb_session.py       # one-time FB login
-│   ├── fb_fetch.py         # FB → eBay read
-│   └── fb_post.py          # eBay → FB write (pre-fills form)
+│   └── fb_fetch.py         # scrape a Marketplace listing
 └── references/
-    ├── ebay_field_map.md # condition codes, title rules, required fields
-    ├── fb_field_map.md   # FB condition strings, category list, mapping
-    └── draft_schema.md   # JSON shapes (eBay-side, FB-side, intermediate)
+    ├── ebay_field_map.md   # condition codes, title rules, required fields
+    └── draft_schema.md     # JSON shape ebay_publish.py expects
 ```
 
 ## Account-safety warning
 
-Using `fb_post.py` and (to a lesser extent) `fb_fetch.py` puts your personal Facebook account at risk. FB actively detects automated activity and can flag, restrict, or ban accounts. Mitigations:
+`fb_fetch.py` drives a real Chromium session against your personal Facebook account to scrape Marketplace listings. FB actively detects automated activity and can flag, restrict, or ban accounts in extreme cases. Mitigations:
 
-- Use the headed browser (default). Headless triggers more detection.
-- Don't bulk-post. Spread runs over hours; volume isn't the only signal — rate is.
-- If FB throws a security challenge, solve it in the open browser, then re-run `fb_session.py` to refresh cookies.
-- Keep `fb_post.py --auto-publish` off until you've done several successful manual reviews.
-- The FB scrape relies on undocumented DOM patterns. Selectors will break when FB rewrites their UI. Be ready to fix them.
+- Run at human pace — one listing at a time, not in a tight loop.
+- If FB throws a security challenge during a scrape, solve it in the open browser, then re-run `fb_session.py` to refresh cookies.
+- The scrape relies on undocumented DOM patterns and CSS class hashes. Selectors will break when FB rewrites their UI. Be ready to fix `fb_fetch.py` (the cover-photo detection and description extraction are the most fragile parts).
 
 ## Known limitations
 

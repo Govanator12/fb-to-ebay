@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -89,11 +90,60 @@ def explain_failure(resp: httpx.Response, step: str) -> None:
                     "returnPolicyId).",
                     file=sys.stderr,
                 )
+            # eBay reports per-aspect single-value violations as errorId 25002
+            # with text like "Theme should contain only one value."
+            if "should contain only one value" in msg.lower():
+                m = re.search(r"^([A-Z][\w /-]+?) should contain only one value", msg)
+                aspect = m.group(1) if m else "this aspect"
+                print(
+                    f"\n  → Aspect '{aspect}' is single-valued in this category. "
+                    f"In the draft's `aspects` block, pass exactly one element "
+                    f"(e.g. \"{aspect}\": [\"<one-value>\"]) instead of multiple.",
+                    file=sys.stderr,
+                )
         if not body.get("errors"):
             print(json.dumps(body, indent=2), file=sys.stderr)
     except json.JSONDecodeError:
         print(resp.text, file=sys.stderr)
     raise PublishError(step)
+
+
+def validate_draft(draft: dict) -> None:
+    """Pre-flight checks that don't need an API call.
+
+    Catches the obvious failure modes before we spend a token + EPS upload
+    quota + policy creation chasing them. Errors at this layer surface to
+    the user as a plain sys.exit (not PublishError) since nothing has been
+    created yet — no rollback needed.
+    """
+    title = draft.get("title", "")
+    if not title:
+        sys.exit("Draft is missing required field: title")
+    if len(title) > 80:
+        sys.exit(
+            f"Title is {len(title)} chars — eBay's hard limit is 80. "
+            f"Trim before publishing.\n  Title: {title!r}"
+        )
+    if not draft.get("description"):
+        sys.exit("Draft is missing required field: description")
+    if not draft.get("imageUrls") and not draft.get("localImages"):
+        sys.exit("Draft must include either imageUrls (HTTPS) or localImages (file paths)")
+    # Most aspect values are single-valued; multi-value violates a per-category rule.
+    # We can't perfectly pre-check (eBay's metadata varies by category) but we can
+    # flag the obvious case where someone passed >1 string when stricter aspects
+    # like Theme/Genre/Brand usually want exactly one.
+    aspects = draft.get("aspects") or {}
+    for name, values in aspects.items():
+        if not isinstance(values, list):
+            sys.exit(f"Draft aspects['{name}'] must be a list, got {type(values).__name__}")
+        if len(values) > 1 and name in {"Theme", "Genre", "Brand", "Type", "Material", "Color"}:
+            print(
+                f"  ! Warning: aspect '{name}' has {len(values)} values "
+                f"({values!r}); many categories restrict it to one. If publish "
+                f"fails with 'should contain only one value', drop to a single "
+                f"element.",
+                file=sys.stderr,
+            )
 
 
 def create_inventory_item(env: dict, token: str, sku: str, draft: dict) -> None:
@@ -369,7 +419,8 @@ def main() -> None:
     if not args.draft.exists():
         sys.exit(f"Draft file not found: {args.draft}")
     draft = json.loads(args.draft.read_text())
-    sku = draft.get("sku") or make_sku(draft.get("title", "item"))
+    validate_draft(draft)
+    sku = draft.get("sku") or make_sku(draft["title"])
 
     env = load_env()
     print(f"Environment: {env['EBAY_ENV']}")

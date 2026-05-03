@@ -37,7 +37,9 @@ Logs into FB with the saved session, scrapes title/description/price/condition/i
 
 ### 2. Normalize for eBay
 
-Read `references/ebay_field_map.md` for the rules. Rewrite the title (≤80 chars, search-friendly), expand the description, map `fbCondition` → eBay enum (e.g. `"Used - Like New"` → `USED_EXCELLENT`).
+Read `references/ebay_field_map.md` for the rules. Rewrite the title (eBay rejects > 80 chars — count yours before saving the draft), expand the description, map `fbCondition` → eBay enum (e.g. `"Used - Like New"` → `USED_EXCELLENT`).
+
+For aspects (item-specifics) you supply — `Brand`, `Type`, `Theme`, `Genre`, `Color`, `Material` — assume single-valued unless you have evidence otherwise. Many categories reject multi-value lists with errorId 25002 ("X should contain only one value"). When in doubt, pick the one most-relevant value rather than listing all of them.
 
 ### 3. Suggest a category
 

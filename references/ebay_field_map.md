@@ -51,6 +51,10 @@ Don't add aspirational filler ("Perfect gift!" "Won't last long!"). eBay buyers 
 - **merchantLocationKey** — the user's saved inventory location key. They can list locations via `GET /sell/inventory/v1/location` if they don't remember; the default is usually `default`.
 - **fulfillmentPolicyId**, **paymentPolicyId**, **returnPolicyId** — set up once at https://www.bizpolicy.ebay.com. Once created, the IDs can be cached in `.env` as `EBAY_FULFILLMENT_POLICY_ID` etc., so they don't have to live in every draft. (The publish script doesn't read those env vars yet — add them to drafts manually for now.)
 
+## Title
+
+eBay rejects titles longer than **80 characters** (`errorId 25718`). The publish script pre-validates and exits before doing any work if the title's too long, so you can't waste an EPS upload on it — but better to count yours upfront and avoid the round-trip. Front-load search keywords (brand, model, type), no ALL CAPS, no emoji.
+
 ## Item-specifics ("aspects")
 
 Many categories require structured aspects (e.g. clothing needs Size, Color, Brand, Department). The Taxonomy API has `getItemAspectsForCategory` which returns the required ones for a given categoryId — call it from a one-off `httpx` snippet if a publish fails with an aspect error. Pass aspects as:
@@ -63,7 +67,7 @@ Many categories require structured aspects (e.g. clothing needs Size, Color, Bra
 }
 ```
 
-(Each value is an array; eBay supports multi-value aspects.)
+Each value is an array — but **most categories restrict each aspect to a single element**. Multi-value will be rejected with `errorId 25002` ("X should contain only one value"). Some aspects (notably `Theme`, `Genre`, `Brand`, `Type`, `Material`, `Color`) are usually single-valued; default to one element unless you've confirmed via `getItemAspectsForCategory` that the aspect's `aspectMode` is `FREE_TEXT` with `multiValueEnabled: true`. The publish script warns when you pass >1 value for a commonly-single aspect.
 
 ## Marketplace ID
 

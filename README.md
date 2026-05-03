@@ -245,6 +245,21 @@ In Claude Code:
 
 Claude detects the direction from the URL, runs the right fetch script, proposes a draft in chat, you approve or edit, and it publishes (or pre-fills the FB form for you to submit).
 
+## Non-US sellers
+
+The defaults assume a US-based seller posting to `EBAY_US` with USPS shipping in pound/inch units. To use a different marketplace, override these env vars in `.env`:
+
+| Setting | US default | What to change for others |
+|---|---|---|
+| `EBAY_MARKETPLACE_ID` | `EBAY_US` | `EBAY_GB`, `EBAY_AU`, `EBAY_CA`, `EBAY_DE`, etc. |
+| `EBAY_SHIPPING_SERVICES` | `USPSParcel,USPSPriority` | UK: `RoyalMailFirstClassStandard,RoyalMailSecondClassStandard`<br>AU: `AU_StandardDelivery,AU_ExpressDelivery`<br>(Find valid codes via the Trading API `GeteBayDetails` call with `DetailName=ShippingServiceDetails`.) |
+| `EBAY_WEIGHT_UNIT` | `POUND` | `KILOGRAM`, `GRAM`, `OUNCE` |
+| `EBAY_DIMENSION_UNIT` | `INCH` | `CENTIMETER` |
+| Currency in drafts | `USD` | Set `price.currency` in each draft (`GBP`, `EUR`, `AUD`, etc.) |
+| Inventory location address (step 6e) | Seattle, WA | Replace with your real ship-from address before running the curl |
+
+The default fulfillment policy in step 6b also assumes USPS — replace `shippingServiceCode` and `shippingCarrierCode` values to match your carrier before running it.
+
 ## Scripts
 
 All scripts are standalone — they declare their own dependencies via [PEP 723 inline metadata](https://peps.python.org/pep-0723/) and run with [uv](https://docs.astral.sh/uv/). No project venv to manage.

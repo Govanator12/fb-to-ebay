@@ -110,7 +110,7 @@ def create_inventory_item(env: dict, token: str, sku: str, draft: dict) -> None:
         body["product"]["aspects"] = draft["aspects"]
     if "conditionDescription" in draft:
         body["conditionDescription"] = draft["conditionDescription"]
-    pkg = build_package_weight_and_size(draft)
+    pkg = build_package_weight_and_size(draft, env)
     if pkg:
         body["packageWeightAndSize"] = pkg
 
@@ -121,8 +121,13 @@ def create_inventory_item(env: dict, token: str, sku: str, draft: dict) -> None:
     print(f"✓ Inventory item created (sku={sku})")
 
 
-def build_package_weight_and_size(draft: dict) -> dict | None:
+def build_package_weight_and_size(draft: dict, env: dict | None = None) -> dict | None:
     """Convert draft.weightLbs + draft.boxDimensionsIn into eBay's packageWeightAndSize.
+
+    Units default to POUND / INCH (US sellers); override via EBAY_WEIGHT_UNIT
+    (POUND, OUNCE, KILOGRAM, GRAM) and EBAY_DIMENSION_UNIT (INCH, CENTIMETER)
+    in .env. Field names stay weightLbs / boxDimensionsIn even when the unit
+    isn't pounds/inches — they're labels, not unit assertions.
 
     We deliberately omit packageType — eBay's USPS calculated rates throw
     'Invalid <ShippingPackage>' when a packageType is specified that isn't
@@ -133,15 +138,18 @@ def build_package_weight_and_size(draft: dict) -> dict | None:
     dims = draft.get("boxDimensionsIn")
     if weight is None and not dims:
         return None
+    env = env or {}
+    weight_unit = env.get("EBAY_WEIGHT_UNIT", "POUND").upper()
+    dim_unit = env.get("EBAY_DIMENSION_UNIT", "INCH").upper()
     out: dict = {}
     if weight is not None:
-        out["weight"] = {"value": float(weight), "unit": "POUND"}
+        out["weight"] = {"value": float(weight), "unit": weight_unit}
     if dims and len(dims) == 3:
         out["dimensions"] = {
             "length": float(dims[0]),
             "width": float(dims[1]),
             "height": float(dims[2]),
-            "unit": "INCH",
+            "unit": dim_unit,
         }
     return out or None
 

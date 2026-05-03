@@ -163,6 +163,23 @@ Opens a real Chromium window with the create-listing form pre-filled. **By defau
 - Don't bulk-post. Spread runs over hours — rate matters more than volume.
 - The user is putting their personal FB account at risk every time `fb_post.py` runs. Be explicit about that the first time it comes up.
 
+## Example: a typical FB → eBay run
+
+Concrete walk-through of what a successful interaction looks like, so you can pattern-match in similar situations.
+
+**User:** `https://www.facebook.com/marketplace/item/1234567890`
+
+**You:**
+1. Run `fb_fetch.py` on the URL → get back title `"Vintage Levi's 501 jeans 32x34"`, fbCondition `"Used - Good"`, price `$45`, 4 photos in `~/.cache/fb-to-ebay/vintage-levis-501-jeans-32x34/`.
+2. Polish the title to `"Vintage Levi's 501 Jeans Men's 32x34 Straight Leg Denim Distressed"` (front-loads keywords, ≤80 chars).
+3. Run `ebay_taxonomy.py "Vintage Levi's 501 Jeans Men's 32x34 ..."` → top suggestions are `11483 (Men's > Jeans)`, `175771 (Vintage > Men's > ...)`, `155182 (Specialty)`. Show all three. User picks `11483`.
+4. Run `ebay_conditions.py 11483` → see the category accepts `USED_EXCELLENT`, `USED_VERY_GOOD`, `USED_GOOD`, `USED_ACCEPTABLE`. Map FB's `"Used - Good"` to `USED_GOOD`.
+5. Confirm shipping settings — env has handlingDays=2, localPickup=false, shipInternationally=false, so only ask about weight and dimensions ("about how much does it weigh and what size box?"). User: "about 1 lb in a small mailer, maybe 12×9×2".
+6. Show the proposed draft in chat (title, price, condition + USED_GOOD enum, category 11483, description preview, 4 photos, shipping summary). Wait for "publish" / "yes" / "go".
+7. Write the draft to `/tmp/ebay-draft.json` and run `ebay_publish.py --draft /tmp/ebay-draft.json`. Show the live URL it prints.
+
+If anything fails (LSAS, missing aspect, condition rejection), check the Errors section below and recover — don't blindly retry.
+
 ## Reference files
 
 - `references/ebay_field_map.md` — eBay condition codes, title rules, required offer fields

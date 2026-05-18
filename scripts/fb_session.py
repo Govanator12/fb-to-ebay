@@ -8,7 +8,7 @@
 Launches a real Chromium window pointing at facebook.com. You log in by hand
 (handles 2FA, CAPTCHA, security challenges naturally). When you're done, come
 back to this terminal and press Enter — the script saves the browser context
-state to ~/.config/fb-to-ebay/fb_session.json so future scripts can reuse it
+state to ~/.config/ebay-lister/fb_session.json so future scripts can reuse it
 without prompting for credentials.
 
 Run again whenever the session expires (FB usually keeps you logged in for
@@ -20,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "fb-to-ebay"
+CONFIG_DIR = Path.home() / ".config" / "ebay-lister"
 SESSION_PATH = CONFIG_DIR / "fb_session.json"
 
 

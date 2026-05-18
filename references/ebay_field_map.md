@@ -1,12 +1,12 @@
 # eBay field mapping reference
 
-Use this when normalizing a Facebook Marketplace listing into the shape the eBay Inventory API expects.
+Use this when shaping an item — whether described from scratch or scraped from a Facebook Marketplace listing — into the form the eBay Inventory API expects.
 
 ## Condition
 
-eBay's Inventory API takes a condition **enum string** (not the numeric ID). Map FB's free-text condition to one of these:
+eBay's Inventory API takes a condition **enum string** (not the numeric ID). Map the item's free-text condition (what the user told you, or what FB Marketplace reported) to one of these:
 
-| FB Marketplace says | eBay enum |
+| Free-text condition (user's words or FB Marketplace) | eBay enum |
 |---|---|
 | "New", "Brand new", "New with tags" | `NEW` |
 | "New (Other)", "Open box" | `NEW_OTHER` |

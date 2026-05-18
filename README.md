@@ -1,22 +1,26 @@
-# fb-to-ebay
+# ebay-lister
 
-A [Claude Code](https://claude.com/claude-code) skill that crossposts a Facebook Marketplace listing to eBay. You paste a Marketplace URL into Claude; it scrapes the listing, polishes the title and description for eBay's conventions, picks a category, and (after you approve) publishes via the eBay Sell APIs.
+A [Claude Code](https://claude.com/claude-code) skill that lists items on eBay. You describe an item to Claude (or point it at photos); it polishes the title and description for eBay's conventions, picks a category, gathers shipping details, and — after you approve — publishes via the eBay Sell APIs.
 
-The "intelligence" — extracting fields, normalizing copy, mapping conditions, picking a category — happens inside your existing Claude Code session, so it doesn't cost anything beyond your Claude subscription. Only the eBay-side calls run as code.
+It works two ways:
+
+- **List from scratch** (primary) — describe a brand-new item and supply a folder of photos. Claude interviews you for the details and drafts the listing.
+- **Crosspost from Facebook** (optional feature) — paste a Facebook Marketplace URL and Claude scrapes that listing with Playwright instead of interviewing you, then publishes the same way.
+
+The "intelligence" — eliciting/extracting fields, normalizing copy, mapping conditions, picking a category — happens inside your existing Claude Code session, so it doesn't cost anything beyond your Claude subscription. Only the eBay-side calls run as code.
 
 ## How it works
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  You paste a facebook.com/marketplace URL into Claude            │
-└──────────────────────────────┬───────────────────────────────────┘
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ fb_fetch.py (Playwright + saved FB session)                      │
-│ - extracts title, description, price, condition, photos          │
-│ - downloads images locally to ~/.cache/fb-to-ebay/<slug>/        │
-└──────────────────────────────┬───────────────────────────────────┘
-                               ▼
+        ┌─────────────────────────┐   ┌──────────────────────────────┐
+        │ PRIMARY: list from      │   │ OPTIONAL: crosspost from FB  │
+        │ scratch                 │   │                              │
+        │ new_listing.py scaffolds│   │ fb_fetch.py (Playwright +    │
+        │ a draft; you describe   │   │ saved FB session) scrapes a  │
+        │ the item + supply photos│   │ Marketplace URL              │
+        └────────────┬────────────┘   └───────────────┬──────────────┘
+                     └───────────────┬────────────────┘
+                                     ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ Claude polishes title for eBay search, expands description,      │
 │ runs ebay_taxonomy.py for category, ebay_conditions.py for       │
@@ -35,15 +39,17 @@ The "intelligence" — extracting fields, normalizing copy, mapping conditions, 
                          live eBay URL
 ```
 
-The reverse direction (eBay → FB) is **not implemented** in this repo — the skill is one-way, FB → eBay. FB has no public listing-write API for individuals; posting on FB requires Playwright form-driving, which is feasible but hasn't been validated end-to-end. If you want it later, contributions welcome.
+The crosspost feature is one-way only (FB → eBay). The reverse direction (eBay → FB) is **not implemented** — FB has no public listing-write API for individuals; posting on FB requires Playwright form-driving, which is feasible but hasn't been validated end-to-end. If you want it later, contributions welcome.
 
 ## Install
 
 ```bash
-git clone https://github.com/Govanator12/fb-to-ebay.git ~/.claude/skills/fb-to-ebay
+git clone https://github.com/Govanator12/ebay-lister.git ~/.claude/skills/ebay-lister
 ```
 
-Claude Code auto-discovers skills in `~/.claude/skills/`. The skill triggers when you paste a `facebook.com/marketplace` URL or ask Claude to "crosspost", "mirror", or "list this on eBay".
+Claude Code auto-discovers skills in `~/.claude/skills/`. The skill triggers when you ask Claude to "list something on eBay" / "post a new item to eBay", or — for the crosspost feature — when you paste a `facebook.com/marketplace` URL or say "crosspost"/"mirror" a listing.
+
+Steps 1–7 of Setup are required for everything. Steps 8–9 (Playwright + Facebook session) are **only needed for the optional crosspost feature** — skip them if you only list items from scratch.
 
 ## Setup
 
@@ -81,9 +87,9 @@ Production uses your real eBay account, but **Sandbox is a separate database wit
 ### 4. Configure `.env`
 
 ```bash
-mkdir -p ~/.config/fb-to-ebay
-cp ~/.claude/skills/fb-to-ebay/.env.example ~/.config/fb-to-ebay/.env
-$EDITOR ~/.config/fb-to-ebay/.env
+mkdir -p ~/.config/ebay-lister
+cp ~/.claude/skills/ebay-lister/.env.example ~/.config/ebay-lister/.env
+$EDITOR ~/.config/ebay-lister/.env
 ```
 
 Fill in `EBAY_SANDBOX_APP_ID`, `EBAY_SANDBOX_CERT_ID`, `EBAY_SANDBOX_DEV_ID`, `EBAY_SANDBOX_RUNAME` with your sandbox keyset values. Leave `EBAY_ENV=sandbox`. The matching `EBAY_PRODUCTION_*` block stays empty for now — fill it in later (see [Going to production](#going-to-production)) so a single `.env` holds both environments and you can flip between them just by changing `EBAY_ENV`.
@@ -93,7 +99,7 @@ Fill in `EBAY_SANDBOX_APP_ID`, `EBAY_SANDBOX_CERT_ID`, `EBAY_SANDBOX_DEV_ID`, `E
 ### 5. One-time OAuth login
 
 ```bash
-uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py login
+uv run ~/.claude/skills/ebay-lister/scripts/ebay_auth.py login
 ```
 
 The script prints a URL. Open it in a browser, log in with your `TESTUSER_<name>` credentials, grant consent. You'll be redirected to your auth-accepted URL — your browser will probably show a 404 (since `example.com` doesn't host that page), but the URL in the address bar is what matters. Copy the **entire** URL (with the `?code=...` query string) and paste it back into the script.
@@ -101,12 +107,12 @@ The script prints a URL. Open it in a browser, log in with your `TESTUSER_<name>
 **If your shell can't pipe stdin to interactive prompts** (e.g. Claude Code's bash input mode), use the two-step form: run `login` to get the URL, then complete the exchange with the URL as a flag:
 
 ```bash
-uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py login --redirect-url "https://example.com/accepted?code=..."
+uv run ~/.claude/skills/ebay-lister/scripts/ebay_auth.py login --redirect-url "https://example.com/accepted?code=..."
 ```
 
 The double quotes are required — the URL contains `&` and `=` that the shell would otherwise interpret.
 
-The token is cached per-environment at `~/.config/fb-to-ebay/token-<env>.json` (e.g. `token-sandbox.json`, mode `0600`) so logging into one environment doesn't clobber the other. The access token lasts 2 hours and auto-refreshes; the refresh token is good for ~18 months. Scopes granted: `api_scope`, `sell.inventory`, `sell.account`. If you change `SCOPES` in `ebay_auth.py`, re-run `login` to mint a new token — refresh won't add scopes.
+The token is cached per-environment at `~/.config/ebay-lister/token-<env>.json` (e.g. `token-sandbox.json`, mode `0600`) so logging into one environment doesn't clobber the other. The access token lasts 2 hours and auto-refreshes; the refresh token is good for ~18 months. Scopes granted: `api_scope`, `sell.inventory`, `sell.account`. If you change `SCOPES` in `ebay_auth.py`, re-run `login` to mint a new token — refresh won't add scopes.
 
 ### 6. Opt into Business Policies, create policies, register a location
 
@@ -116,7 +122,7 @@ For **sandbox**, the seller-hub UI for policies isn't reliable, so use the Accou
 
 ```bash
 HOST=api.sandbox.ebay.com   # or api.ebay.com for production
-TOKEN=$(uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py token)
+TOKEN=$(uv run ~/.claude/skills/ebay-lister/scripts/ebay_auth.py token)
 
 # 6a. Opt in to business-policy management (sandbox only — production is opted in by default)
 curl -X POST https://$HOST/sell/account/v1/program/opt_in \
@@ -185,16 +191,18 @@ EBAY_SANDBOX_MERCHANT_LOCATION_KEY=default
 
 ```bash
 # Auth + Taxonomy API
-uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_taxonomy.py "Vintage leather jacket"
+uv run ~/.claude/skills/ebay-lister/scripts/ebay_taxonomy.py "Vintage leather jacket"
 
 # Confirm policy opt-in landed
-curl -sH "Authorization: Bearer $(uv run ~/.claude/skills/fb-to-ebay/scripts/ebay_auth.py token)" \
+curl -sH "Authorization: Bearer $(uv run ~/.claude/skills/ebay-lister/scripts/ebay_auth.py token)" \
   https://api.sandbox.ebay.com/sell/account/v1/program/get_opted_in_programs
 ```
 
 The taxonomy call should print three category suggestions as JSON. The opt-in check should show `SELLING_POLICY_MANAGEMENT` in the programs list. If either returns a 403, your token is missing a scope — re-run `ebay_auth.py login`.
 
-### 8. Install Playwright's Chromium binary (one-time)
+### 8. (Crosspost feature only) Install Playwright's Chromium binary
+
+> Steps 8–9 are only needed for the optional Facebook crosspost feature. Skip them if you only list items from scratch.
 
 ```bash
 uv run --with playwright playwright install chromium
@@ -202,13 +210,13 @@ uv run --with playwright playwright install chromium
 
 `fb_fetch.py` uses Playwright to scrape Marketplace listings (FB has no public read API). The Chromium download is ~170 MB; the install is one-time per machine.
 
-### 9. Capture a Facebook session
+### 9. (Crosspost feature only) Capture a Facebook session
 
 ```bash
-uv run ~/.claude/skills/fb-to-ebay/scripts/fb_session.py
+uv run ~/.claude/skills/ebay-lister/scripts/fb_session.py
 ```
 
-A real Chromium window opens. Log in to FB by hand (handles 2FA / CAPTCHA naturally). When you can see your news feed, return to the terminal and press Enter. Cookies are cached at `~/.config/fb-to-ebay/fb_session.json`. Re-run any time the session expires (FB usually keeps you logged in for weeks).
+A real Chromium window opens. Log in to FB by hand (handles 2FA / CAPTCHA naturally). When you can see your news feed, return to the terminal and press Enter. Cookies are cached at `~/.config/ebay-lister/fb_session.json`. Re-run any time the session expires (FB usually keeps you logged in for weeks).
 
 ## Going to production
 
@@ -230,13 +238,21 @@ A single `.env` carries both sets of credentials side-by-side. Switch envs by ch
 
 ## Usage
 
-In Claude Code, paste a Facebook Marketplace listing URL:
+In Claude Code, just say what you want to list:
+
+```
+> List my old desk lamp on eBay — photos are in ~/Pictures/desk-lamp
+```
+
+The skill auto-triggers, scaffolds a draft with `new_listing.py`, interviews you for the details, proposes a draft, and publishes after you approve.
+
+To crosspost an existing Facebook listing instead, paste its Marketplace URL:
 
 ```
 > https://www.facebook.com/marketplace/item/1234567890
 ```
 
-The skill auto-triggers, runs `fb_fetch.py`, proposes a draft, you approve or edit, and it publishes to eBay. See `SKILL.md` for the full workflow Claude follows.
+That triggers the crosspost feature — `fb_fetch.py` scrapes the listing, then the flow continues the same way. See `SKILL.md` for the full workflow Claude follows.
 
 ## Non-US sellers
 
@@ -259,30 +275,32 @@ All scripts are standalone — they declare their own dependencies via [PEP 723 
 
 | Script | Purpose |
 |---|---|
+| `scripts/new_listing.py` | Scaffold a blank draft JSON for listing an item from scratch; pre-fills `localImages` from a folder of photos. The entry point for the primary from-scratch flow. |
 | `scripts/ebay_auth.py` | OAuth login + token refresh + `token` subcommand. Per-env tokens (`token-sandbox.json` / `token-production.json`); supports `--redirect-url` for non-interactive shells. |
 | `scripts/ebay_taxonomy.py` | Suggest top-3 eBay categories for a title via the Commerce Taxonomy API |
 | `scripts/ebay_conditions.py` | List the valid condition IDs + Inventory-API enums for a chosen category (call before picking a condition) |
 | `scripts/ebay_eps.py` | Upload local image files to eBay Picture Services, return eBay-hosted URLs (called automatically by `ebay_publish`) |
-| `scripts/ebay_publish.py` | Publish a draft via the Inventory API chain; auto-uploads `localImages` via EPS, mints per-listing fulfillment policies, rolls back orphans on failure; supports `--dry-run` |
-| `scripts/fb_session.py` | One-time interactive FB login (headed Chromium); saves session cookies |
-| `scripts/fb_fetch.py` | Scrape a Marketplace listing URL via Playwright using the saved session, download images locally |
+| `scripts/ebay_publish.py` | Publish a draft via the Inventory API chain; pre-checks the category's required item specifics, auto-uploads `localImages` via EPS, mints per-listing fulfillment policies, rolls back orphans on failure; supports `--dry-run` |
+| `scripts/fb_session.py` | *(crosspost feature only)* One-time interactive FB login (headed Chromium); saves session cookies |
+| `scripts/fb_fetch.py` | *(crosspost feature only)* Scrape a Marketplace listing URL via Playwright using the saved session, download images locally |
 
 ## Repo layout
 
 ```
-fb-to-ebay/
+ebay-lister/
 ├── SKILL.md              # the manifest Claude reads when the skill triggers
 ├── README.md             # this file
-├── .env.example          # template for ~/.config/fb-to-ebay/.env
+├── .env.example          # template for ~/.config/ebay-lister/.env
 ├── .gitignore
 ├── scripts/
+│   ├── new_listing.py      # scaffold a from-scratch draft (primary entry point)
 │   ├── ebay_auth.py        # OAuth login + per-env token cache
 │   ├── ebay_taxonomy.py    # category suggestions
 │   ├── ebay_conditions.py  # valid conditions for a category
 │   ├── ebay_eps.py         # upload local images to eBay Picture Services
 │   ├── ebay_publish.py     # publish chain (auto-EPS, dynamic policy, rollback)
-│   ├── fb_session.py       # one-time FB login
-│   └── fb_fetch.py         # scrape a Marketplace listing
+│   ├── fb_session.py       # one-time FB login        (crosspost feature only)
+│   └── fb_fetch.py         # scrape a Marketplace listing (crosspost feature only)
 └── references/
     ├── ebay_field_map.md   # condition codes, title rules, required fields
     └── draft_schema.md     # JSON shape ebay_publish.py expects

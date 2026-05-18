@@ -108,6 +108,26 @@ def explain_failure(resp: httpx.Response, step: str) -> None:
     raise PublishError(step)
 
 
+def find_todo_placeholders(node: object, path: str = "draft") -> list[str]:
+    """Recursively collect JSON paths whose value is the literal "TODO" sentinel.
+
+    new_listing.py writes "TODO" into every field a from-scratch draft still
+    needs. This walks the draft so a half-filled template fails pre-flight with
+    an exact list of what's missing, instead of publishing placeholder text.
+    """
+    found: list[str] = []
+    if isinstance(node, str):
+        if node == "TODO":
+            found.append(path)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            found.extend(find_todo_placeholders(value, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            found.extend(find_todo_placeholders(value, f"{path}[{i}]"))
+    return found
+
+
 def validate_draft(draft: dict) -> None:
     """Pre-flight checks that don't need an API call.
 
@@ -116,6 +136,17 @@ def validate_draft(draft: dict) -> None:
     the user as a plain sys.exit (not PublishError) since nothing has been
     created yet — no rollback needed.
     """
+    # new_listing.py scaffolds from-scratch drafts with the literal sentinel
+    # "TODO" in every field the user still has to fill. Catch any that survived
+    # before we publish a listing literally titled "TODO".
+    todo_paths = find_todo_placeholders(draft)
+    if todo_paths:
+        sys.exit(
+            "Draft still has unfilled TODO placeholder(s) from new_listing.py:\n"
+            + "\n".join(f"  - {p}" for p in todo_paths)
+            + "\nFill these in before publishing."
+        )
+
     title = draft.get("title", "")
     if not title:
         sys.exit("Draft is missing required field: title")
@@ -406,13 +437,104 @@ def listing_url(env: dict, listing_id: str) -> str:
     return f"https://www.{host}/itm/{listing_id}"
 
 
+def get_category_tree_id(env: dict, token: str, marketplace: str) -> str:
+    """Resolve the category tree id for a marketplace (e.g. EBAY_US -> "0")."""
+    resp = httpx.get(
+        f"https://{api_host(env)}/commerce/taxonomy/v1/get_default_category_tree_id",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"marketplace_id": marketplace},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["categoryTreeId"]
+
+
+def fetch_category_aspects(env: dict, token: str, tree_id: str, category_id: str) -> list[dict]:
+    """Return the Taxonomy API's item-aspect metadata for a category."""
+    resp = httpx.get(
+        f"https://{api_host(env)}/commerce/taxonomy/v1/category_tree/{tree_id}"
+        f"/get_item_aspects_for_category",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"category_id": category_id},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("aspects", []) or []
+
+
+def check_required_aspects(env: dict, token: str, draft: dict) -> None:
+    """Pre-flight: confirm the draft supplies every item specific the category requires.
+
+    eBay only enforces required aspects at publishOffer time (errorId 25002) —
+    by which point we've already created an inventory item, uploaded images to
+    EPS, and minted a fulfillment policy, all of which then has to roll back.
+    Fetching the category's aspect metadata up front lets us fail *before* any
+    of that work, with an actionable list of what's missing.
+
+    Non-fatal on network/metadata errors: we warn and let publishOffer remain
+    the backstop, so a Taxonomy-API hiccup never blocks an otherwise-valid
+    publish.
+    """
+    category_id = draft.get("categoryId")
+    if not category_id:
+        return  # create_offer surfaces a missing categoryId on its own
+    marketplace = draft.get("marketplaceId", env.get("EBAY_MARKETPLACE_ID", "EBAY_US"))
+    try:
+        tree_id = get_category_tree_id(env, token, marketplace)
+        aspects = fetch_category_aspects(env, token, tree_id, str(category_id))
+    except (httpx.HTTPError, KeyError, json.JSONDecodeError) as e:
+        print(f"  ! Could not pre-check category aspects ({e}); "
+              f"relying on publishOffer to validate them.", file=sys.stderr)
+        return
+
+    supplied = draft.get("aspects") or {}
+    required_names: list[str] = []
+    missing: list[str] = []
+    bad_value: list[str] = []
+    for a in aspects:
+        constraint = a.get("aspectConstraint", {})
+        if not constraint.get("aspectRequired"):
+            continue
+        name = a.get("localizedAspectName")
+        required_names.append(name)
+        values = [v for v in (supplied.get(name) or []) if str(v).strip()]
+        allowed = [v.get("localizedValue") for v in (a.get("aspectValues") or [])]
+        if not values:
+            hint = f" — e.g. {allowed[:8]}" if allowed else ""
+            missing.append(f"{name}{hint}")
+        elif constraint.get("aspectMode") == "SELECTION_ONLY":
+            # A free-text value is fine for FREE_TEXT aspects, but a
+            # SELECTION_ONLY aspect rejects anything off its value list.
+            allowed_set = {v for v in allowed if v}
+            for val in values:
+                if val not in allowed_set:
+                    bad_value.append(
+                        f"{name}={val!r} is not an accepted value "
+                        f"(SELECTION_ONLY); choose from {sorted(allowed_set)[:12]}"
+                    )
+
+    if missing or bad_value:
+        lines = [f"Category {category_id} requires item specifics the draft doesn't satisfy:"]
+        lines += [f"  - missing required aspect: {m}" for m in missing]
+        lines += [f"  - {b}" for b in bad_value]
+        lines.append(
+            "Add/fix them under the draft's `aspects` block (each value a "
+            "single-element list, e.g. \"Brand\": [\"Philips\"]) and retry."
+        )
+        sys.exit("\n".join(lines))
+
+    if required_names:
+        print(f"✓ Required item specifics present ({', '.join(required_names)})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--draft", required=True, type=Path, help="Path to draft JSON")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate the draft and print the assembled request bodies without calling eBay.",
+        help="Validate the draft + pre-check category aspects (read-only eBay "
+             "calls), then print the draft without creating a listing.",
     )
     args = parser.parse_args()
 
@@ -424,15 +546,20 @@ def main() -> None:
 
     env = load_env()
     print(f"Environment: {env['EBAY_ENV']}")
+    token = get_access_token(env)
+
+    # Pre-flight: confirm the category's required item specifics are all in the
+    # draft *before* we create an inventory item / upload to EPS / mint a
+    # policy. Without this, a missing aspect only surfaces at publishOffer
+    # (errorId 25002), forcing a full rollback and retry.
+    check_required_aspects(env, token, draft)
 
     if args.dry_run:
-        print("\n--- DRY RUN, not calling eBay ---")
+        print("\n--- DRY RUN: draft validated, no listing created ---")
         print(f"SKU: {sku}")
         print("Draft:")
         print(json.dumps(draft, indent=2))
         return
-
-    token = get_access_token(env)
 
     # Mint a per-listing fulfillment policy if the draft has shipping overrides
     # (handlingDays, localPickup, etc.) or any of the corresponding env defaults

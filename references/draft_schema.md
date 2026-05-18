@@ -17,8 +17,8 @@ The intermediate output of `fb_fetch.py` is close to this shape — Claude takes
   "weightLbs": 1.0,
   "boxDimensionsIn": [8, 6, 4],
   "localImages": [
-    "~/.cache/fb-to-ebay/apple-iphone-13/img-01.jpg",
-    "~/.cache/fb-to-ebay/apple-iphone-13/img-02.jpg"
+    "~/.cache/ebay-lister/apple-iphone-13/img-01.jpg",
+    "~/.cache/ebay-lister/apple-iphone-13/img-02.jpg"
   ]
 }
 ```
@@ -53,7 +53,7 @@ The intermediate output of `fb_fetch.py` is close to this shape — Claude takes
 | `boxDimensionsIn` | recommended | Box dimensions `[L, W, H]` (units configurable via `EBAY_DIMENSION_UNIT`, default INCH). Wired into `packageWeightAndSize.dimensions`. Required alongside `weightLbs` for CALCULATED rates. |
 | `freeShipping` | no | If `true`, the per-listing fulfillment policy uses FLAT_RATE with $0 shipping (seller pays). Default `false` (CALCULATED, buyer pays). |
 
-\* Required at offer-creation time, but `ebay_publish.py` will use the corresponding env var if the draft omits it. Set the env vars in `~/.config/fb-to-ebay/.env` to avoid pasting policy IDs into every draft.
+\* Required at offer-creation time, but `ebay_publish.py` will use the corresponding env var if the draft omits it. Set the env vars in `~/.config/ebay-lister/.env` to avoid pasting policy IDs into every draft.
 
 If any of `handlingDays`, `localPickup`, `shipInternationally` (or their env equivalents) are set, `ebay_publish.py` mints a fresh per-listing fulfillment policy on the fly via `createFulfillmentPolicy` (or reuses an existing matching one) and uses its ID instead of the env-default. Otherwise the env-default policy is used as-is.
 

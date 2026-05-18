@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-CONFIG_DIR = Path.home() / ".config" / "fb-to-ebay"
+CONFIG_DIR = Path.home() / ".config" / "ebay-lister"
 ENV_PATH = CONFIG_DIR / ".env"
 
 # Keys whose value is environment-specific. The .env may set

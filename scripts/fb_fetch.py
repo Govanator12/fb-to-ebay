@@ -6,7 +6,7 @@
 """Scrape a Facebook Marketplace listing into a draft JSON.
 
 Uses the FB session captured by fb_session.py (which must be run first).
-Downloads images locally to ~/.cache/fb-to-ebay/<slug>/ so they don't
+Downloads images locally to ~/.cache/ebay-lister/<slug>/ so they don't
 expire, since FB image URLs are signed and short-lived.
 
 Usage:
@@ -29,8 +29,8 @@ from pathlib import Path
 
 import httpx
 
-SESSION_PATH = Path.home() / ".config" / "fb-to-ebay" / "fb_session.json"
-CACHE_DIR = Path.home() / ".cache" / "fb-to-ebay"
+SESSION_PATH = Path.home() / ".config" / "ebay-lister" / "fb_session.json"
+CACHE_DIR = Path.home() / ".cache" / "ebay-lister"
 
 
 def slugify(s: str) -> str:

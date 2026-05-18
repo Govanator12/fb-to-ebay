@@ -66,7 +66,7 @@ def _multipart_body(xml_request: str, image_bytes: bytes, content_type: str) -> 
     The XML payload goes first (Content-Disposition: form-data; name="XML Payload"),
     then the binary image (name="dummy"). The order matters — XML must be first.
     """
-    boundary = "----fb-to-ebay-boundary"
+    boundary = "----ebay-lister-boundary"
     parts = [
         f'--{boundary}\r\n'
         f'Content-Disposition: form-data; name="XML Payload"\r\n'

@@ -202,6 +202,29 @@ Crosspost-feature-only errors:
 - **FB security challenge mid-script**: the open browser will show a CAPTCHA or identity check. Have the user solve it manually, then re-run `fb_session.py` afterward to capture refreshed cookies.
 - **Selector breakage on FB**: FB rewrites its DOM frequently. If `fb_fetch.py` returns mostly-empty fields, the selectors in that script need updating. Tell the user — don't pretend the data is good.
 
+## Managing existing listings
+
+For inspecting and tweaking items already on the account (no new listing), use `ebay_listings.py` plus a few direct Sell Inventory API calls. The scope is intentionally small — listing, withdrawing, simple price updates, republishing — because anything fancier is rare enough that ad-hoc curl is fine.
+
+```
+# Show everything on the account (defaults to EBAY_ENV from .env)
+uv run ~/.claude/skills/ebay-lister/scripts/ebay_listings.py
+uv run ~/.claude/skills/ebay-lister/scripts/ebay_listings.py --env production
+uv run ~/.claude/skills/ebay-lister/scripts/ebay_listings.py --status PUBLISHED
+uv run ~/.claude/skills/ebay-lister/scripts/ebay_listings.py --json   # for piping into jq / Python
+```
+
+Output columns: title, status (`PUBLISHED` / `UNPUBLISHED` / `NO_OFFER`), price, and the live listing URL or offer ID. Pass `--env <other>` to read the other environment without editing `.env`; the script promotes the right `EBAY_<env>_*` credentials internally.
+
+Common follow-ups, all hitting `/sell/inventory/v1/offer/{offerId}`:
+
+- **Withdraw a live listing** (pulls it from the marketplace; inventory item + offer stay on file): `POST .../withdraw`. State flips to `UNPUBLISHED`.
+- **Republish a withdrawn offer** (same SKU, same offer, no recreate): `POST .../publish`. eBay issues a fresh listingId — the old URL doesn't come back.
+- **Change price**: `updateOffer` is a full PUT replace, so `GET` the offer first, edit `pricingSummary.price.value`, drop read-only fields (`offerId`, `status`, `listing`), then PUT. A 25402 warning ("funds may be on hold") is just eBay's standard new-seller boilerplate, not a failure.
+- **Delete entirely**: `DELETE .../offer/{offerId}` then `DELETE .../inventory_item/{sku}` if you also want the SKU gone.
+
+Don't bulk-republish a pile of `UNPUBLISHED` offers without knowing why they went down — eBay sometimes auto-unpublishes for policy/aspect issues, and republishing without fixing the root cause will just fail or re-trigger the takedown.
+
 ## Reference files
 
 - `references/ebay_field_map.md` — eBay condition codes, title rules, required offer fields
